@@ -122,6 +122,46 @@ export type FetchOutcome = {
 
 const MAX_REDIRECTS = 8;
 
+const COOKIE_PLACEHOLDER = /\$\{cookie:([A-Za-z0-9_.-]+)\}/g;
+
+/**
+ * Resolve `${cookie:NAME}` placeholders in request headers from the session jar.
+ *
+ * This lets a module use a cookie value it cannot read (for example a platform
+ * token derived from the `jwt` cookie) without handing the whole jar to the
+ * module. Only headers are substituted; URL and body are untouched. The cookie
+ * must match the request host/path and must not be expired.
+ */
+export function resolveHeaderCookies(
+  headers: Record<string, string>,
+  jar: Cookie[],
+  url: URL,
+  now: number,
+): Record<string, string> {
+  const path = url.pathname === '' ? '/' : url.pathname;
+  const resolved: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    resolved[name] = value.replace(COOKIE_PLACEHOLDER, (_match, cookieName: string) => {
+      const cookie = jar.find(
+        (item) =>
+          item.name === cookieName &&
+          (!item.expires_at || item.expires_at <= 0 || item.expires_at > now) &&
+          (!item.secure || url.protocol === 'https:') &&
+          domainMatches(item.domain, url.hostname) &&
+          pathMatches(item.path || '/', path),
+      );
+      if (!cookie) {
+        throw new NetError(
+          'platform_login_expired',
+          `请求头需要 Cookie ${cookieName}，但当前会话没有`,
+        );
+      }
+      return cookie.value;
+    });
+  }
+  return resolved;
+}
+
 /**
  * The single outbound path for modules. Composition of this function is where the framework keeps
  * quiet hours, allowlists, credential injection and the write ledger enforceable (spec §4.1).
@@ -161,7 +201,7 @@ export async function performFetch(
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
     options.beforeRequest?.();
-    const headers: Record<string, string> = { ...request.headers };
+    const headers = resolveHeaderCookies(request.headers, jar, current, options.now);
     const cookie = cookieHeaderFor(jar, current, options.now);
     if (cookie) headers.cookie = cookie;
     if (options.token) headers.authorization = `Bearer ${options.token}`;
