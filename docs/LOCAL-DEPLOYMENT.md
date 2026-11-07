@@ -22,7 +22,7 @@ journalctl --user -u courseflow-local -n 50 --no-pager
 
 ## 构建与更新
 
-1. 在智慧树仓库运行 `cargo +stable test --locked` 和 `cargo +stable build --release --locked`。
+1. 取得智慧树模块仓库（`git clone https://github.com/Course-Flow-Lab/courseflow-zhs.git ../courseflow-zhs`，已有检出则跳过），再运行 `cargo +stable test --locked` 和 `cargo +stable build --release --locked`。
 2. 在框架仓库运行 `npm ci`、`npm run typecheck`、`npm run check:web` 和 `npm test`。Rust release 存在时，测试包含真实子进程的 fixture 契约链路。
 3. 将已提交框架代码导出至新的 release 目录，使用 `npm ci --omit=dev` 安装运行依赖。
 4. 使用同一 `CF_DATA_DIR` 安装智慧树 release 模块，明确设置 `{"source":"live"}`。不要安装 simulator，也不要复制测试数据库。
