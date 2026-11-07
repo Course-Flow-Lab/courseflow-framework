@@ -666,6 +666,7 @@ export class ModuleManager {
           cookies: entry.cookies,
           token: entry.token,
           now: nowSeconds(),
+          binary: params.binary === true,
           signal: entry.job ? this.jobSignals.get(entry.job.id)?.signal : undefined,
           beforeRequest: () => {
             this.sessions.resolveFetch(session, moduleId);
