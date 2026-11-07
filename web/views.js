@@ -31,13 +31,17 @@ const duration = (seconds) => seconds == null ? '时长未知' : seconds < 60 ? 
 export const empty = (title, text, action = '', symbol = 'book') => `<div class="empty-state"><span class="empty-icon">${icon(symbol)}</span><h2>${esc(title)}</h2><p>${esc(text)}</p>${action}</div>`;
 const heading = (eyebrow, title, description, tools = '') => `<header class="page-heading"><div><div class="eyebrow">${esc(eyebrow)}</div><h1>${esc(title)}</h1><p class="muted">${esc(description)}</p></div><div class="actions">${tools}</div></header>`;
 
-export function authView(bootstrap) {
+export function authView(bootstrap, mode = 'login') {
   const setup = bootstrap?.setup_required;
-  return `<form id="auth-form" class="auth-card"><a class="brand" href="#/courses"><span class="brand-mark" aria-hidden="true">≋</span>Courseflow</a><div class="eyebrow">你的课程工作台</div><h1>${setup ? '从这里，开始有序学习' : '欢迎回来'}</h1><p class="muted">${setup ? '创建管理员账号，连接你的第一个课程平台。' : '连接课程，继续上次的进度。'}</p>
+  const register = !setup && mode === 'register';
+  const required = bootstrap?.registration?.invitation_required !== false;
+  return `<form id="auth-form" data-mode="${setup ? 'setup' : register ? 'register' : 'login'}" class="auth-card"><a class="brand" href="#/courses"><span class="brand-mark" aria-hidden="true">≋</span>Courseflow</a><div class="eyebrow">你的课程工作台</div><h1>${setup ? '从这里，开始有序学习' : register ? '创建你的工作台账号' : '欢迎回来'}</h1><p class="muted">${setup ? '创建管理员账号，连接你的第一个课程平台。' : register ? required ? '使用管理员提供的邀请码，加入课程工作台。' : '注册账号，开始管理你的课程与进度。' : '连接课程，继续上次的进度。'}</p>
     ${setup ? '<label>管理员设置码<input name="setup_code" autocomplete="off" placeholder="填写服务终端中的一次性设置码" required></label>' : ''}
     <label>用户名<input name="username" autocomplete="username" minlength="2" maxlength="32" placeholder="你的用户名" required></label>
-    <label>密码<input name="password" type="password" autocomplete="${setup ? 'new-password' : 'current-password'}" minlength="12" placeholder="至少 12 个字符" required></label>
-    <p class="form-error" role="alert" hidden></p><button class="button primary full" type="submit">${setup ? '创建管理员并进入' : '登录工作台'}${icon('arrow')}</button><div class="auth-foot">课程 · 进度 · 任务，一处管理</div></form>`;
+    <label>密码<input name="password" type="password" autocomplete="${setup || register ? 'new-password' : 'current-password'}" minlength="12" placeholder="至少 12 个字符" required></label>
+    ${register ? `<label>确认密码<input name="password_confirmation" type="password" autocomplete="new-password" minlength="12" placeholder="再输入一次密码" required></label><label>邀请码${required ? '' : '（选填）'}<input name="invitation_code" class="invitation-input" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="29" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"${required ? ' required' : ''}></label>` : ''}
+    <p class="form-error" role="alert" hidden></p><button class="button primary full" type="submit">${setup ? '创建管理员并进入' : register ? '注册并进入工作台' : '登录工作台'}${icon('arrow')}</button>
+    ${setup ? '' : `<p class="auth-switch">${register ? '已有账号？<a href="#/login">返回登录</a>' : '还没有账号？<a href="#/register">注册账号</a>'}</p>`}<div class="auth-foot">课程 · 进度 · 任务，一处管理</div></form>`;
 }
 
 export function navigation(state) {
@@ -45,7 +49,7 @@ export function navigation(state) {
   const link = (href, text, symbol, active, count = '') => `<a class="nav-item${active ? ' active' : ''}" href="${href}"${active ? ' aria-current="page"' : ''}>${icon(symbol)}<span>${esc(text)}</span>${count !== '' ? `<span class="nav-count">${count}</span>` : ''}</a>`;
   return `<div class="nav-group">${link('#/courses', '所有课程', 'grid', route.page === 'courses' && !route.pid)}${link('#/tasks', '任务中心', 'tasks', route.page === 'tasks', activeTasks(state.tasks).length || '')}</div>
     <div class="nav-label">课程平台<span>${state.platforms.length}</span></div><div class="nav-group platform-nav">${state.platforms.map((p) => `<a class="nav-item${route.pid === p.id ? ' active' : ''}" href="#/platform/${encodeURIComponent(p.id)}"${route.pid === p.id ? ' aria-current="page"' : ''}><span class="platform-mark">${esc([...p.short].slice(0, 1).join(''))}</span><span>${esc(p.name)}</span><span class="status-dot ${p.connected && p.module.healthy ? '' : 'offline'}" title="${p.module.healthy ? p.connected ? '已连接' : '未连接' : '模块未运行'}"></span></a>`).join('') || '<p class="nav-hint">连接平台后，课程会出现在这里。</p>'}</div>
-    <div class="nav-label">工作台</div><div class="nav-group">${link('#/settings', '模型与任务设置', 'module', route.page === 'settings')}${link('#/connections', '平台连接', 'link', route.page === 'connections')}${link('#/logs', '日志导出', 'download', route.page === 'logs')}${state.me.user.role === 'admin' ? link('#/modules', '模块管理', 'module', route.page === 'modules') : ''}</div>`;
+    <div class="nav-label">工作台</div><div class="nav-group">${link('#/settings', '模型与任务设置', 'module', route.page === 'settings')}${link('#/connections', '平台连接', 'link', route.page === 'connections')}${link('#/logs', '日志导出', 'download', route.page === 'logs')}${state.me.user.role === 'admin' ? link('#/invitations', '注册与邀请', 'user', route.page === 'invitations') + link('#/modules', '模块管理', 'module', route.page === 'modules') : ''}</div>`;
 }
 
 export function coursesView(state) {
@@ -128,7 +132,7 @@ export function modulesView(state) {
 }
 
 export function accountView(state) {
-  return heading('个人空间', '我的账号', '管理当前登录与工作台偏好。') + `<section class="panel account-panel"><span class="avatar large">${esc([...state.me.user.username][0].toUpperCase())}</span><h2>${esc(state.me.user.username)}</h2><span class="badge">${state.me.user.role === 'admin' ? '管理员' : '成员'}</span><div class="account-stats"><div><strong>${state.platforms.filter((p) => p.connected).length}</strong><span>已连接平台</span></div><div><strong>${activeTasks(state.tasks).length}</strong><span>当前任务</span></div></div><div class="settings-row"><span>模型与任务偏好</span><a class="button" href="#/settings">打开设置</a></div><div class="settings-row"><span>运行与任务日志</span><a class="button" href="#/logs">日志导出</a></div><div class="settings-row"><span>界面主题</span><button class="button" data-action="theme">切换深浅主题</button></div><div class="settings-row"><span>站点会话</span><button class="button danger" data-action="logout">退出登录</button></div></section>`;
+  return heading('个人空间', '我的账号', '管理当前登录与工作台偏好。') + `<section class="panel account-panel"><span class="avatar large">${esc([...state.me.user.username][0].toUpperCase())}</span><h2>${esc(state.me.user.username)}</h2><span class="badge">${state.me.user.role === 'admin' ? '管理员' : '成员'}</span><div class="account-stats"><div><strong>${state.platforms.filter((p) => p.connected).length}</strong><span>已连接平台</span></div><div><strong>${activeTasks(state.tasks).length}</strong><span>当前任务</span></div></div><div class="settings-row"><span>模型与任务偏好</span><a class="button" href="#/settings">打开设置</a></div><div class="settings-row"><span>运行与任务日志</span><a class="button" href="#/logs">日志导出</a></div>${state.me.user.role === 'admin' ? '<div class="settings-row"><span>新成员注册与邀请码</span><a class="button" href="#/invitations">注册与邀请</a></div>' : ''}<div class="settings-row"><span>界面主题</span><button class="button" data-action="theme">切换深浅主题</button></div><div class="settings-row"><span>站点会话</span><button class="button danger" data-action="logout">退出登录</button></div></section>`;
 }
 
 export function modalFrame(title, body, wide = false) {

@@ -1,16 +1,17 @@
 import type { FastifyInstance } from 'fastify';
 import type { ServerContext } from '../context.ts';
-import { createSession, createUser, hasUsers, revokeSession, verifyPassword } from '../../core/auth.ts';
+import { createSession, createUser, hasUsers, registerUser, revokeSession, verifyPassword } from '../../core/auth.ts';
 import { nowSeconds } from '../../core/domain.ts';
 import { AppError, badRequest, unauthorized } from '../../core/errors.ts';
 import { readCookie } from '../access.ts';
 
 export function registerAuthRoutes(app: FastifyInstance, context: ServerContext): void {
   const { db, setupCode, log } = context;
-  const { requireIdentity, setSessionCookie } = context.access;
+  const { requireIdentity, requireOrigin, setSessionCookie } = context.access;
   app.post<{ Body: { setup_code?: string; username?: string; password?: string } }>(
     '/api/auth/setup',
     async (request, reply) => {
+      requireOrigin(request);
       const body = request.body ?? {};
       if (!hasUsers(db)) {
         if (body.setup_code !== setupCode) {
@@ -28,6 +29,7 @@ export function registerAuthRoutes(app: FastifyInstance, context: ServerContext)
   );
 
   app.post<{ Body: { username?: string; password?: string } }>('/api/auth/login', async (request, reply) => {
+    requireOrigin(request);
     const body = request.body ?? {};
     const username = (body.username ?? '').trim();
     if (!username || !body.password) throw badRequest('请填写用户名和密码');
@@ -43,6 +45,17 @@ export function registerAuthRoutes(app: FastifyInstance, context: ServerContext)
       user: { id: row.id, username: row.username, role: row.role },
       csrf: session.csrf,
     };
+  });
+
+  app.post<{ Body: { username?: unknown; password?: unknown; invitation_code?: unknown } }>('/api/auth/register', async (request, reply) => {
+    requireOrigin(request);
+    const body = request.body ?? {};
+    const username = typeof body.username === 'string' ? body.username.trim() : '';
+    if (!username || typeof body.password !== 'string') throw badRequest('请填写用户名和密码');
+    const { user, session } = await registerUser(db, username, body.password, body.invitation_code, nowSeconds());
+    reply.header('cache-control', 'no-store');
+    reply.header('set-cookie', setSessionCookie(session.token));
+    return { user, csrf: session.csrf };
   });
 
   app.post('/api/auth/logout', async (request, reply) => {

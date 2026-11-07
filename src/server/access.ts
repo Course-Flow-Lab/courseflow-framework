@@ -14,7 +14,13 @@ export function readCookie(request: FastifyRequest, name: string): string | unde
 }
 
 export function createAccess(db: Db, config: Config) {
+  function requireOrigin(request: FastifyRequest): void {
+    if (request.headers.origin && request.headers.origin !== config.publicUrl) {
+      throw new AppError(403, 'invalid_origin', '请求来源与站点地址不一致');
+    }
+  }
   return {
+    requireOrigin,
     requireIdentity(request: FastifyRequest, options: { write?: boolean; admin?: boolean } = {}): Identity {
       const token = readCookie(request, 'cf_session');
       if (!token) throw unauthorized();
@@ -24,9 +30,7 @@ export function createAccess(db: Db, config: Config) {
       if (options.write && request.headers['x-courseflow-csrf'] !== current.csrf) {
         throw new AppError(403, 'invalid_csrf', '页面会话已变化，请刷新后重试');
       }
-      if (request.headers.origin && request.headers.origin !== config.publicUrl) {
-        throw new AppError(403, 'invalid_origin', '请求来源与站点地址不一致');
-      }
+      requireOrigin(request);
       return current;
     },
     setSessionCookie(token: string): string {

@@ -214,6 +214,19 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 10px; }
 .auth-card > p { margin: 12px 0 27px; font-size: 12px; }
 .auth-card .button { margin-top: 10px; }
 .auth-foot { margin-top: 27px; padding-top: 19px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; text-align: center; }
+.auth-card .auth-switch { margin: 18px 0 0; text-align: center; }
+.auth-switch a { color: var(--accent); margin-left: 6px; }
+.invitation-input { text-transform: uppercase; font-family: ui-monospace, monospace; font-size: 12px; }
+.invitation-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.invitation-controls { margin-bottom: 22px; }
+.invitation-controls form > .button { margin-top: 16px; }
+.generated-invitations { margin-bottom: 22px; }
+.generated-invitations textarea { display: block; min-height: 80px; max-height: 300px; font-family: ui-monospace, monospace; margin-bottom: 12px; }
+.invitation-record { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 17px 0; border-top: 1px solid var(--line); }
+.invitation-record-main { min-width: 0; }
+.invitation-record-main p { margin-top: 4px; font-size: 11px; }
+.invitation-record .actions { flex-shrink: 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .form-error { color: var(--red); font-size: 12px; margin: 12px 0; white-space: pre-wrap; }
 dialog { border: 1px solid var(--line); border-radius: 13px; padding: 0; width: min(480px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); background: var(--card); color: var(--ink); box-shadow: var(--shadow); overflow-y: auto; }
 dialog:has(.wide) { width: min(650px, calc(100vw - 32px)); }
@@ -310,6 +323,8 @@ dialog::backdrop { background: #10152566; backdrop-filter: blur(3px); }
   .auth-card { padding: 29px 25px; }
   .auth-card h1 { font-size: 23px; }
   .account-panel { padding: 24px; }
+  .invitation-record { align-items: flex-start; flex-wrap: wrap; gap: 10px; }
+  .generated-invitations .section-heading { flex-direction: column; }
   .toast { bottom: calc(145px + env(safe-area-inset-bottom)); }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
