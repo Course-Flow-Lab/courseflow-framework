@@ -563,6 +563,7 @@ export class ModuleManager {
       }
       case 'cw.browser.open':
       case 'cw.browser.evaluate':
+      case 'cw.browser.mouse':
       case 'cw.browser.close': {
         const session = this.requireSessionParam(params);
         const entry = this.sessions.resolveFetch(session, moduleId);
@@ -571,6 +572,7 @@ export class ModuleManager {
         if (params.stage !== undefined && params.stage !== 'read' && quietFor(this.db, entry.owner).active) throw new AppError(409, 'quiet_hours', '夜间暂停期间不执行页面写入');
         if (method === 'cw.browser.open') return this.browser.open(entry, manifest.permissions.network, params, () => { this.sessions.resolveFetch(session, moduleId); });
         if (method === 'cw.browser.evaluate') return this.browser.evaluate(entry, String(params.page ?? ''), String(params.expression ?? ''));
+        if (method === 'cw.browser.mouse') return this.browser.mouse(entry, String(params.page ?? ''), (params.action ?? {}) as Record<string, unknown>);
         await this.browser.closeOwned(entry, String(params.page ?? '')); return {};
       }
       case 'cw.peers.record': {

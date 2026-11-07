@@ -12,6 +12,7 @@ import { AiService } from './services/ai.ts';
 import { AnswerMemory } from './services/answers.ts';
 import { BrowserService } from './services/browser.ts';
 import { LogStore, redactLog } from './services/logs.ts';
+import { configureProxy } from './core/network.ts';
 
 export const VERSION = FRAMEWORK_VERSION;
 export { FRAMEWORK_VERSION };
@@ -51,6 +52,7 @@ export async function createRuntime(
   config: Config,
   options: { setupCode?: string; logLevel?: Level; recoverTasks?: boolean } = {},
 ): Promise<Runtime> {
+  configureProxy();
   const logs = new LogStore(config.dataDir);
   const log = makeLogger((options.logLevel ?? config.logLevel ?? 'info') as Level, logs);
   setQuietOverride(Number.isFinite(config.quietOverrideUntil) ? config.quietOverrideUntil : null);
