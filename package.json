@@ -1,0 +1,26 @@
+{
+  "name": "courseflow-framework",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node.js framework that hosts Courseflow platform modules",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/main.ts serve",
+    "serve": "node src/main.ts serve",
+    "test": "node --test test/",
+    "typecheck": "tsc --noEmit",
+    "cli": "node src/main.ts"
+  },
+  "dependencies": {
+    "argon2": "^0.45.2",
+    "fastify": "^5.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
