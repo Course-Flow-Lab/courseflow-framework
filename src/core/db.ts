@@ -16,6 +16,21 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS site_settings (
+  setting_key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS invitations (
+  id TEXT PRIMARY KEY,
+  code_hash TEXT NOT NULL UNIQUE,
+  code_hint TEXT NOT NULL,
+  created_by TEXT NOT NULL REFERENCES users(id),
+  created_at INTEGER NOT NULL,
+  used_by TEXT REFERENCES users(id),
+  used_at INTEGER,
+  revoked_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS invitations_created ON invitations(created_at DESC, id);
 CREATE TABLE IF NOT EXISTS secrets (
   owner TEXT NOT NULL,
   scope TEXT NOT NULL,
@@ -105,8 +120,8 @@ export class Db {
     this.raw.exec('PRAGMA busy_timeout = 5000;');
     this.raw.exec(SCHEMA);
     const version = this.raw.prepare('PRAGMA user_version').get() as { user_version: number };
-    if (version.user_version > 2) throw new Error('数据库由较新版本创建，请使用对应版本的框架');
-    if (version.user_version < 2) this.raw.exec('PRAGMA user_version = 2');
+    if (version.user_version > 3) throw new Error('数据库由较新版本创建，请使用对应版本的框架');
+    if (version.user_version < 3) this.raw.exec('PRAGMA user_version = 3');
   }
 
   run(sql: string, ...params: SqlValue[]): { changes: number } {

@@ -3,13 +3,14 @@ import * as view from './views.js';
 import * as features from './features.js';
 import { captureQa, qaChange } from './qa.js';
 import { logsView, submitLogs } from './logs.js';
+import { invitationsView, loadInvitations, invitationFormIds, submitInvitations, invitationAction } from './invitations.js';
 
 const $ = (selector) => document.querySelector(selector);
 const state = {
   me: null, csrf: '', bootstrap: null, platforms: [], modules: [], tasks: [],
   courseLists: {}, courseErrors: {}, course: null, units: [], presentation: null,
   settings: null, feature: null, qaCourses: {}, selected: new Set(), route: parseRoute(location.hash), loading: false,
-  search: '', filter: 'all', taskFilter: 'all', modal: null,
+  search: '', filter: 'all', taskFilter: 'all', modal: null, invitationAdmin: null, generatedInvitations: [],
 };
 let routeGeneration = 0;
 let sessionGeneration = 0;
@@ -52,10 +53,19 @@ function expireSession() {
   routeGeneration += 1;
   clearTimeout(refreshTimer);
   closeModal();
-  Object.assign(state, { me: null, csrf: '', platforms: [], modules: [], tasks: [], courseLists: {}, courseErrors: {}, course: null, units: [], settings: null, feature: null, qaCourses: {}, selected: new Set() });
+  Object.assign(state, { me: null, csrf: '', platforms: [], modules: [], tasks: [], courseLists: {}, courseErrors: {}, course: null, units: [], settings: null, feature: null, qaCourses: {}, selected: new Set(), invitationAdmin: null, generatedInvitations: [] });
   $('#workspace').hidden = true;
+  $('#page').replaceChildren();
   $('#auth').hidden = false;
-  $('#auth').innerHTML = view.authView(state.bootstrap);
+  renderAuth();
+}
+
+function renderAuth() {
+  const mode = parseRoute(location.hash).page;
+  const register = !state.bootstrap?.setup_required && mode === 'register';
+  $('#auth').innerHTML = view.authView(state.bootstrap, mode);
+  $('#auth').setAttribute('aria-label', register ? '站点注册' : '站点登录');
+  document.title = `${state.bootstrap?.setup_required ? '初始化工作台' : register ? '注册账号' : '登录工作台'} · Courseflow`;
 }
 
 function renderNavigation() {
@@ -63,7 +73,7 @@ function renderNavigation() {
   $('#sidebar-nav').innerHTML = view.navigation(state);
   $('#account-link').innerHTML = `<span class="avatar">${view.esc([...state.me.user.username][0].toUpperCase())}</span><span><strong>${view.esc(state.me.user.username)}</strong><small>${state.me.user.role === 'admin' ? '管理员' : '成员'}</small></span><span class="spacer"></span><span class="muted">⌄</span>`;
   $('#mobile-nav').innerHTML = [['courses', '课程', 'grid'], ['tasks', '任务', 'tasks'], ['connections', '连接', 'link'], ['account', '我的', 'user']].map(([page, label, icon]) => `<a href="#/${page}" class="${state.route.page === page || page === 'courses' && state.route.page === 'course' ? 'active' : ''}">${view.icon(icon)}<span>${label}</span></a>`).join('');
-  const name = ({ courses: '所有课程', course: state.course?.name || '课程目录', tasks: '任务中心', connections: '平台连接', modules: '模块管理', account: '我的账号', settings: '模型与任务设置', logs: '日志导出' })[state.route.page] || '页面不存在';
+  const name = ({ courses: '所有课程', course: state.course?.name || '课程目录', tasks: '任务中心', connections: '平台连接', modules: '模块管理', account: '我的账号', settings: '模型与任务设置', logs: '日志导出', invitations: '注册与邀请' })[state.route.page] || '页面不存在';
   const platform = state.platforms.find((p) => p.id === state.route.pid);
   $('#breadcrumb').innerHTML = `<a href="#/courses">工作台</a><span>/</span>${platform ? `<a href="#/platform/${encodeURIComponent(platform.id)}">${view.esc(platform.name)}</a><span>/</span>` : ''}<strong>${view.esc(state.route.page === 'courses' && platform ? '课程' : name)}</strong>`;
   document.title = `${state.route.page === 'courses' && platform ? platform.name : name} · Courseflow`;
@@ -85,7 +95,7 @@ function renderTasks() {
 function renderPage() {
   if (!state.me) return;
   const render = ({ courses: view.coursesView, course: (s) => view.courseView(s, features.courseContent(s)), tasks: view.tasksView,
-    connections: view.connectionsView, modules: view.modulesView, account: view.accountView, settings: features.settingsView, logs: logsView })[state.route.page];
+    connections: view.connectionsView, modules: view.modulesView, account: view.accountView, settings: features.settingsView, logs: logsView, invitations: invitationsView })[state.route.page];
   $('#page').innerHTML = render ? render(state) : view.empty('这个页面不存在', '从课程工作台继续浏览。', '<a class="button primary" href="#/courses">返回课程</a>');
   renderNavigation();
   renderTasks();
@@ -116,6 +126,7 @@ async function loadWorkspace() {
   $('#workspace').hidden = false;
   $('#version').textContent = `v${state.bootstrap.version}`;
   setConnection(true);
+  if (['login', 'register'].includes(parseRoute(location.hash).page)) history.replaceState(null, '', '#/courses');
   await loadRoute();
   scheduleRefresh();
 }
@@ -148,7 +159,7 @@ async function loadRoute(force = false) {
   state.presentation = null;
   state.selected = new Set();
   $('#page-error').hidden = true;
-  state.loading = ['courses', 'course', 'settings'].includes(state.route.page);
+  state.loading = ['courses', 'course', 'settings', 'invitations'].includes(state.route.page);
   renderPage();
   try {
     if (state.route.page === 'courses') {
@@ -171,6 +182,7 @@ async function loadRoute(force = false) {
       } else { const result = await api(coursePath(route.pid, course) + '/details'); if (generation !== routeGeneration) return; state.course = course; state.presentation = result.ui; }
       await features.load(state, api, () => generation === routeGeneration && Boolean(state.me));
     } else if (state.route.page === 'settings') await features.load(state, api, () => generation === routeGeneration && Boolean(state.me));
+    else if (state.route.page === 'invitations' && state.me.user.role === 'admin') await loadInvitations(state, api, () => generation === routeGeneration && Boolean(state.me));
   } catch (error) {
     if (generation === routeGeneration && state.me) showError(error);
   } finally {
@@ -365,7 +377,7 @@ document.addEventListener('change', (event) => {
 
 document.addEventListener('submit', async (event) => {
   const form = event.target;
-  if (!(form instanceof HTMLFormElement) || ![...features.formIds, 'auth-form', 'install-form', 'config-form', 'login-form', 'logs-form'].includes(form.id)) return;
+  if (!(form instanceof HTMLFormElement) || ![...features.formIds, ...invitationFormIds, 'auth-form', 'install-form', 'config-form', 'login-form', 'logs-form'].includes(form.id)) return;
   event.preventDefault();
   if (pending.has(form.id)) return;
   pending.add(form.id);
@@ -376,9 +388,13 @@ document.addEventListener('submit', async (event) => {
   const data = Object.fromEntries(new FormData(form));
   try {
     if (form.id === 'logs-form') await submitLogs(form, api, toast);
+    else if (invitationFormIds.includes(form.id)) await submitInvitations(form, featureContext());
     else if (features.formIds.includes(form.id)) await features.submit(form, featureContext());
     else if (form.id === 'auth-form') {
-      const path = state.bootstrap?.setup_required ? '/api/auth/setup' : '/api/auth/login';
+      const mode = form.dataset.mode;
+      if (mode === 'register' && data.password !== data.password_confirmation) throw new Error('两次输入的密码不一致。');
+      delete data.password_confirmation;
+      const path = '/api/auth/' + mode;
       await api(path, { method: 'POST', body: data });
       await loadWorkspace();
     } else if (form.id === 'install-form') {
@@ -422,6 +438,7 @@ document.addEventListener('click', async (event) => {
   target.disabled = true;
   try {
     if (await features.action(target, featureContext())) return;
+    if (await invitationAction(target, featureContext())) return;
     if (action === 'theme') setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
     else if (action === 'find') {
       focusSearch = true;
@@ -481,6 +498,7 @@ $('#modal').addEventListener('cancel', (event) => { event.preventDefault(); clos
 window.addEventListener('hashchange', () => {
   if (location.hash === '#page') return;
   if (state.me) { $('#page-scroll').scrollTop = 0; void loadRoute(); }
+  else if (state.bootstrap) renderAuth();
 });
 document.addEventListener('keydown', (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' && state.me) {
