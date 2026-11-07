@@ -37,7 +37,7 @@ export function parseModelAnswer(question: Question, raw: string): { answer: str
     });
   }
   if (question.kind === 'blank' && question.blanks > 1 && values.length === 1) {
-    const parts = values[0].split(/\r?\n|\s*\|\s*/).map((part) => part.trim()).filter(Boolean);
+    const parts = values[0].split(/\r?\n|\s*\|\s*/).map((part: string) => part.trim()).filter(Boolean);
     if (parts.length === question.blanks) values = parts;
   }
   if (!validAnswer(question, values)) {
