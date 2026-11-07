@@ -71,13 +71,34 @@ Node.js 使用权限模型限制文件、网络和子进程。二进制直接作
 | 方法 | 参数 | 结果 |
 | --- | --- | --- |
 | `platform.describe` | `module_api`、`framework_version`、`limits.call_timeout_ms` | `module:{name,version,module_api}` 和与清单一致的 `platform` |
-| `auth.begin` | `method`、`session` | `challenge:{id,kind,image,expires_at}` |
+| `auth.begin` | `method`、`session` | `challenge:{id,kind,image,expires_at,fields?}` |
+| `auth.submit` | `challenge`、`session`、`fields` | `state`：`waiting/connected/failed/expired`，可带 `message` |
 | `auth.poll` | `challenge`、`session` | `state`：`waiting/scanned/connected/expired/failed` |
 | `auth.complete` | `challenge`、`session` | `display_name`、稳定平台用户标识 `account_raw` |
 | `auth.verify` | `session` | 连接身份信息 |
 | `auth.keepalive` | `session` | 平台自定义的只读保活结果 |
 
-框架根据平台标识和 `account_raw` 生成账号指纹，扫码 Cookie 由框架保存。`account_raw` 是平台用户标识，不是密码、Cookie 或访问令牌。当前网页只提供 `qr` 登录入口。
+框架根据平台标识和 `account_raw` 生成账号指纹，扫码 Cookie 由框架保存。`account_raw` 是平台用户标识，不是密码、Cookie 或访问令牌。
+
+`platform.login` 包含 `password` 时，`auth.begin` 应返回 `kind:"password"` 的挑战，并可用 `fields` 描述表单：
+
+```json
+{
+  "challenge": {
+    "id": "ch_…",
+    "kind": "password",
+    "expires_at": 1700000000,
+    "fields": [
+      { "name": "username", "label": "账号", "type": "text", "required": true },
+      { "name": "password", "label": "密码", "type": "password", "required": true }
+    ]
+  }
+}
+```
+
+网页按 `fields` 生成表单，提交到 `POST /api/platforms/:pid/login/:id/submit`，框架再调用模块的 `auth.submit`。凭据只在登录交换期间传给模块，框架不持久化；模块不得记录、缓存或写入 `cw.state`。`auth.submit` 返回 `waiting` 后继续 `auth.poll`；`failed` 时保留挑战供用户重试。
+
+当前网页提供 `qr` 与 `password` 两种登录入口；`browser` 仍保留在协议类型中，尚未提供网页入口。
 
 ### 课程与学习
 
@@ -152,6 +173,8 @@ Node.js 使用权限模型限制文件、网络和子进程。二进制直接作
 结果为 `{status,headers,body}`，`body` 是 UTF-8 字符串。编码支持 `raw/json/form/query`；阶段为 `read/open_study/save_study/submit`，默认 `read`。非只读阶段在夜间拒绝。
 
 宿主注入对应会话的 Cookie 和令牌，拒绝模块设置 Cookie、Host、Content-Length，限制重定向次数，并在每次跳转前重新检查域名与任务状态。响应最多八 MB。401 映射为登录过期，403／418／429 映射为平台验证。
+
+请求头的值支持 `${cookie:NAME}` 占位符。宿主在发送前用当前会话中匹配目标主机、路径且未过期的 Cookie 值替换；只替换请求头，不处理 URL 和请求体。占位符缺失时返回 `platform_login_expired`。模块因此可以使用由 Cookie 派生的签名或令牌，而仍然拿不到完整 Cookie 罐。
 
 `commit:true` 在发送前写入通用请求台账，记录应答或未知状态；台账本身不等于业务操作的自动去重锁。交卷使用持久化业务锁，问答使用模块发布意图，不能依赖 HTTP 自动重试实现恢复。
 

@@ -418,6 +418,26 @@ export class ModuleManager {
     return { state, challenge };
   }
 
+  async loginSubmit(
+    owner: string,
+    platform: string,
+    challenge: string,
+    fields: Record<string, string>,
+  ): Promise<{ state: string; message?: string }> {
+    this.sessions.challenge(challenge, owner);
+    const result = (await this.call(platform, 'auth.submit', {
+      challenge,
+      session: challenge,
+      fields,
+    })) as { state?: string; message?: string };
+    const state = typeof result?.state === 'string' ? result.state : 'waiting';
+    if (state === 'expired') this.sessions.dropChallenge(challenge);
+    return {
+      state,
+      ...(typeof result?.message === 'string' ? { message: result.message } : {}),
+    };
+  }
+
   async disconnect(owner: string, platform: string): Promise<void> {
     this.sessions.remove(owner, platform);
   }
