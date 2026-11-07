@@ -1,6 +1,6 @@
 import type { Db } from './db.ts';
 import type { Vault } from './vault.ts';
-import type { Cookie } from './modules/net.ts';
+import type { Cookie } from '../modules/net.ts';
 import { digest, nowSeconds, randomId } from './domain.ts';
 import { conflict, notFound, unauthorized } from './errors.ts';
 

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import { loadConfig, bindAddress } from './config.ts';
+import { loadConfig, bindAddress } from './core/config.ts';
 import { createRuntime, VERSION } from './runtime.ts';
 
 const HELP = `Courseflow framework ${VERSION}
@@ -52,7 +52,7 @@ async function main(): Promise<void> {
   }
 
   if (command === 'module') {
-    const runtime = await createRuntime(config);
+    const runtime = await createRuntime(config, { recoverTasks: false });
     try {
       const action = argv[1];
       const target = argv[2];

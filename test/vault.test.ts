@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Vault } from '../src/vault.ts';
+import { Vault } from '../src/core/vault.ts';
 
 function tempKey(): { dir: string; key: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'courseflow-vault-'));

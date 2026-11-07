@@ -2,15 +2,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import type { Db } from '../db.ts';
-import type { Vault } from '../vault.ts';
-import type { Sessions } from '../sessions.ts';
-import { digest, nowSeconds, quietStatus, randomId } from '../domain.ts';
-import { AppError, badRequest, notFound } from '../errors.ts';
+import type { Db } from '../core/db.ts';
+import type { Vault } from '../core/vault.ts';
+import type { Sessions } from '../core/sessions.ts';
+import { digest, nowSeconds, quietStatus, randomId } from '../core/domain.ts';
+import { AppError, badRequest, notFound } from '../core/errors.ts';
 import type { Course, DescribeResult, Manifest, PlatformDescriptor, Unit } from './protocol.ts';
 import { resolvePresentation, satisfiesRange, validateManifest } from './protocol.ts';
 import { mapPlatformStatus, mergeCookies, performFetch, type Cookie, NetError } from './net.ts';
-import { FRAMEWORK_VERSION, ModuleRunner } from './runner.ts';
+import { ModuleRunner } from './runner.ts';
+import { FRAMEWORK_VERSION } from '../version.ts';
 
 export type ModuleRow = {
   id: string;

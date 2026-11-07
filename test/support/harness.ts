@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRuntime, type Runtime } from '../../src/runtime.ts';
-import type { Config } from '../../src/config.ts';
+import type { Config } from '../../src/core/config.ts';
 
 export type Session = { token: string; csrf: string };
 

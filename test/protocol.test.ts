@@ -7,7 +7,7 @@ import {
   validateManifest,
 } from '../src/modules/protocol.ts';
 import { allowedHost, cookieHeaderFor, mergeCookies, parseSetCookie } from '../src/modules/net.ts';
-import { quietStatus } from '../src/domain.ts';
+import { quietStatus } from '../src/core/domain.ts';
 
 const BASE_MANIFEST = {
   schemaVersion: 1,

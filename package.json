@@ -9,10 +9,12 @@
     "node": ">=24"
   },
   "scripts": {
+    "dev": "node --watch src/main.ts serve",
     "start": "node src/main.ts serve",
     "serve": "node src/main.ts serve",
     "test": "node --test test/",
     "typecheck": "tsc --noEmit",
+    "check:web": "node scripts/check-web.mjs",
     "cli": "node src/main.ts"
   },
   "dependencies": {

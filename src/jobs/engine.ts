@@ -1,9 +1,9 @@
-import type { Db } from './db.ts';
-import type { Vault } from './vault.ts';
-import type { ModuleManager } from './modules/manager.ts';
-import type { Course, Unit } from './modules/protocol.ts';
-import { nowSeconds, quietStatus, randomId, sleep } from './domain.ts';
-import { badRequest, conflict, notFound } from './errors.ts';
+import type { Db } from '../core/db.ts';
+import type { Vault } from '../core/vault.ts';
+import type { ModuleManager } from '../modules/manager.ts';
+import type { Course, Unit } from '../modules/protocol.ts';
+import { nowSeconds, quietStatus, randomId, sleep } from '../core/domain.ts';
+import { badRequest, conflict, notFound } from '../core/errors.ts';
 
 export type TaskRow = {
   id: string;
@@ -55,17 +55,25 @@ export class JobEngine {
   private manager: ModuleManager;
   private log: (level: string, message: string) => void;
   private controllers = new Map<string, AbortController>();
+  private executions = new Map<string, Promise<void>>();
+  private stopping = false;
 
   constructor(options: {
     db: Db;
     vault: Vault;
     manager: ModuleManager;
     log: (level: string, message: string) => void;
+    recoverInterrupted?: boolean;
   }) {
     this.db = options.db;
     this.vault = options.vault;
     this.manager = options.manager;
     this.log = options.log;
+    // A restart never silently replays an unfinished external write.
+    if (options.recoverInterrupted !== false) this.db.run(
+      "UPDATE tasks SET state = 'paused', generation = generation + 1, detail = '服务已重启，请核对进度后继续', updated_at = ?1 WHERE state IN ('queued','running')",
+      nowSeconds(),
+    );
   }
 
   list(owner: string): TaskView[] {
@@ -78,6 +86,13 @@ export class JobEngine {
     const row = this.db.get<TaskRow>('SELECT * FROM tasks WHERE id = ?1 AND owner = ?2', id, owner);
     if (!row) throw notFound('找不到这个任务');
     return this.view(row);
+  }
+
+  events(owner: string, id: string): Array<{ kind: string; detail: string; created_at: number }> {
+    this.get(owner, id);
+    return this.db.all(
+      'SELECT kind, detail, created_at FROM task_events WHERE task_id = ?1 ORDER BY id DESC LIMIT 100', id,
+    );
   }
 
   private view(row: TaskRow): TaskView {
@@ -135,7 +150,7 @@ export class JobEngine {
       now,
     );
     this.event(id, 'created', `已创建任务：${input.course.name}`);
-    void this.run(id);
+    this.launch(id);
     return this.get(owner, id);
   }
 
@@ -150,7 +165,21 @@ export class JobEngine {
     );
     this.event(id, 'cancelled', '任务已停止');
     this.controllers.get(id)?.abort();
-    this.controllers.delete(id);
+    return this.get(owner, id);
+  }
+
+  pause(owner: string, id: string): TaskView {
+    const task = this.get(owner, id);
+    if (task.state === 'paused') return task;
+    if (!['queued', 'running'].includes(task.state)) {
+      throw conflict('invalid_state', '只有排队或运行中的任务可以暂停');
+    }
+    this.db.run(
+      "UPDATE tasks SET state = 'paused', generation = generation + 1, detail = '已由用户暂停', updated_at = ?1 WHERE id = ?2",
+      nowSeconds(), id,
+    );
+    this.event(id, 'paused', '已由用户暂停');
+    this.controllers.get(id)?.abort();
     return this.get(owner, id);
   }
 
@@ -164,8 +193,23 @@ export class JobEngine {
       nowSeconds(),
       id,
     );
-    void this.run(id);
+    this.event(id, 'resumed', '继续任务');
+    this.launch(id);
     return this.get(owner, id);
+  }
+
+  private launch(taskId: string): void {
+    if (this.stopping) return;
+    // Resume waits for the cancelled generation to finish before creating a new executor.
+    const execution = (this.executions.get(taskId) ?? Promise.resolve()).then(() => this.run(taskId));
+    this.executions.set(taskId, execution);
+    const cleanup = () => {
+      if (this.executions.get(taskId) === execution) this.executions.delete(taskId);
+    };
+    void execution.then(cleanup, (error: Error) => {
+      cleanup();
+      this.log('error', `任务执行器失败：${error.message}`);
+    });
   }
 
   private event(taskId: string, kind: string, detail: string): void {
@@ -195,7 +239,7 @@ export class JobEngine {
 
   private async run(taskId: string): Promise<void> {
     const row = this.db.get<TaskRow>('SELECT * FROM tasks WHERE id = ?1', taskId);
-    if (!row) return;
+    if (!row || row.state !== 'queued' || this.stopping) return;
     if (this.controllers.has(taskId)) return;
     const controller = new AbortController();
     this.controllers.set(taskId, controller);
@@ -212,6 +256,7 @@ export class JobEngine {
       );
       if (!course) throw conflict('course_not_found', '课程已不在平台上，任务无法继续');
       const units = await this.manager.units(current.owner, current.platform, course);
+      if (controller.signal.aborted || !this.stillRunning(taskId, generation)) return;
       const selected = unitIds
         .map((id) => units.find((unit) => unit.id === id))
         .filter((unit): unit is Unit => unit !== undefined);
@@ -237,7 +282,7 @@ export class JobEngine {
       for (const unit of pending) {
         this.update(taskId, {
           detail: `正在学习：${unit.name}`,
-          progress: Math.round((completed / selected.length) * 100),
+          progress: Math.max(current.progress ?? 0, Math.round((completed / selected.length) * 100)),
         });
         let steps = 0;
         while (steps < STEP_CAP) {
@@ -257,6 +302,9 @@ export class JobEngine {
             checkpoint.positions[unit.id] ?? null,
             { max_speed: platform.platform.max_speed ?? 1 },
           );
+          // An in-flight step may settle after pause/stop. Its old generation cannot publish
+          // progress, checkpoints or completion into the new task state.
+          if (controller.signal.aborted || !this.stillRunning(taskId, generation)) return;
           const status = String(outcome.status ?? '');
           if (status === 'in_progress') {
             checkpoint.positions[unit.id] = outcome.checkpoint ?? checkpoint.positions[unit.id] ?? null;
@@ -264,7 +312,14 @@ export class JobEngine {
             const seconds = Number(
               (outcome.progress as { watched_seconds?: number } | undefined)?.watched_seconds ?? 0,
             );
-            this.update(taskId, { detail: `正在学习：${unit.name}（已 ${seconds} 秒）` });
+            const duration = Number(unit.duration_seconds ?? 0);
+            const fraction = duration > 0 && Number.isFinite(seconds)
+              ? Math.max(0, Math.min(1, seconds / duration)) : 0;
+            this.update(taskId, {
+              detail: `正在学习：${unit.name}（已 ${Number.isFinite(seconds) ? seconds : 0} 秒）`,
+              progress: Math.max(current.progress ?? 0,
+                Math.min(99, Math.round(((completed + fraction) / selected.length) * 100))),
+            });
             const wait = Math.min(Number(outcome.wait_ms ?? 1000) || 1000, 60_000);
             await sleep(wait, controller.signal);
             continue;
@@ -300,13 +355,13 @@ export class JobEngine {
       this.update(taskId, { state: 'completed', progress: 100, detail: '任务完成' });
       this.event(taskId, 'completed', '任务完成');
     } catch (error) {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || !this.stillRunning(taskId, generation)) return;
       const message = (error as Error).message;
       this.update(taskId, { state: 'failed', detail: message });
       this.event(taskId, 'failed', message);
       this.log('warn', `任务 ${taskId} 失败：${message}`);
     } finally {
-      this.controllers.delete(taskId);
+      if (this.controllers.get(taskId) === controller) this.controllers.delete(taskId);
     }
   }
 
@@ -336,6 +391,19 @@ export class JobEngine {
 
   abortAll(): void {
     for (const controller of this.controllers.values()) controller.abort();
-    this.controllers.clear();
+  }
+
+  async shutdown(): Promise<void> {
+    this.stopping = true;
+    const ownedTasks = [...this.executions.keys()];
+    this.abortAll();
+    // Keep SQLite and module services alive until all in-flight continuations have settled.
+    await Promise.allSettled(this.executions.values());
+    for (const id of ownedTasks) {
+      this.db.run(
+        "UPDATE tasks SET state = 'paused', generation = generation + 1, detail = '服务已停止，请核对进度后继续', updated_at = ?1 WHERE id = ?2 AND state IN ('queued','running')",
+        nowSeconds(), id,
+      );
+    }
   }
 }

@@ -10,9 +10,10 @@ import type {
 } from './protocol.ts';
 import { CALL_TIMEOUT_MS, DESCRIBE_TIMEOUT_MS, MODULE_API } from './protocol.ts';
 import { LineChannel } from './rpc.ts';
-import { AppError, fromModuleError } from '../errors.ts';
+import { AppError, fromModuleError } from '../core/errors.ts';
 
-export const FRAMEWORK_VERSION = '0.1.0';
+import { FRAMEWORK_VERSION } from '../version.ts';
+export { FRAMEWORK_VERSION } from '../version.ts';
 
 export type HostCall = (method: string, params: Record<string, unknown>) => Promise<unknown>;
 
