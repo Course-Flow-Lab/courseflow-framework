@@ -16,12 +16,33 @@ export function parseModelAnswer(question: Question, raw: string): { answer: str
   let data: any;
   try { data = JSON.parse(raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')); } catch { throw conflict('answer_format', '模型答案不是合法 JSON，需要人工检查'); }
   let values = Array.isArray(data.answer) ? data.answer : data.answer == null ? [] : [data.answer];
-  if (question.kind === 'judge') values = values.map((v: unknown) => v === true || v === 'true' ? 'true' : v === false || v === 'false' ? 'false' : String(v));
-  else values = values.map((v: unknown) => String(v));
+  if (question.kind === 'judge') values = values.map((v: unknown) => {
+    const text = String(v).trim().toLowerCase();
+    if (['true', '正确', '对', 'yes', '1'].includes(text)) return 'true';
+    if (['false', '错误', '错', 'no', '0'].includes(text)) return 'false';
+    return text;
+  });
+  else values = values.map((v: unknown) => String(v).trim());
   if (['single', 'multiple'].includes(question.kind)) {
-    values = values.map((value: string) => question.options.some((o) => o.id === value) ? value : /^[A-Z]$/.test(value) ? question.options[value.charCodeAt(0) - 65]?.id ?? value : value);
+    values = values.map((value: string) => {
+      const text = value.trim().replace(/^["'“”]+|["'“”]+$/g, '');
+      if (question.options.some((o) => o.id === text)) return text;
+      const exact = question.options.find((o) => o.text.trim() === text);
+      if (exact) return exact.id;
+      const included = question.options.find((o) => text.includes(o.text) || o.text.includes(text));
+      if (included) return included.id;
+      const letter = /^([A-Z])(?:[\.\):：、\s]|$)/.exec(text);
+      if (letter) return question.options[letter[1].charCodeAt(0) - 65]?.id ?? text;
+      return text;
+    });
   }
-  if (!validAnswer(question, values)) throw conflict('answer_format', '模型答案与题型或选项不符，需要人工补答');
+  if (question.kind === 'blank' && question.blanks > 1 && values.length === 1) {
+    const parts = values[0].split(/\r?\n|\s*\|\s*/).map((part) => part.trim()).filter(Boolean);
+    if (parts.length === question.blanks) values = parts;
+  }
+  if (!validAnswer(question, values)) {
+    throw conflict('answer_format', '模型答案与题型或选项不符，需要人工补答');
+  }
   return { answer: values, explanation: typeof data.explanation === 'string' ? data.explanation : '' };
 }
 export function questionPrompt(question: Question): string {
