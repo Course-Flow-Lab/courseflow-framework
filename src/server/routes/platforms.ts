@@ -30,6 +30,29 @@ export function registerPlatformsRoutes(app: FastifyInstance, context: ServerCon
     },
   );
 
+  app.post<{
+    Params: { pid: string; id: string };
+    Body: { fields?: Record<string, string> };
+  }>(
+    '/api/platforms/:pid/login/:id/submit',
+    async (request) => {
+      const current = requireIdentity(request, { write: true });
+      const fields = request.body?.fields;
+      if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
+        throw badRequest('请提供登录字段');
+      }
+      for (const [name, value] of Object.entries(fields)) {
+        if (typeof value !== 'string') throw badRequest(`登录字段 ${name} 必须是字符串`);
+      }
+      return manager.loginSubmit(
+        current.user.id,
+        request.params.pid,
+        request.params.id,
+        fields,
+      );
+    },
+  );
+
   app.post<{ Params: { pid: string } }>('/api/platforms/:pid/disconnect', async (request) => {
     const current = requireIdentity(request, { write: true });
     for (const task of jobs.list(current.user.id)) if (task.platform === request.params.pid && ['queued', 'running'].includes(task.state)) jobs.pause(current.user.id, task.id);

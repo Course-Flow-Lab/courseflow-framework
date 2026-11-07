@@ -255,7 +255,16 @@ function closeModal() {
   if ($('#modal').open) $('#modal').close();
 }
 
-async function connect(pid) {
+async function connect(pid, method) {
+  const platform = state.platforms.find((p) => p.id === pid);
+  const methods = Array.isArray(platform?.login) ? platform.login : [];
+  const chosen = method || (methods.includes('qr') ? 'qr' : methods.includes('password') ? 'password' : '');
+  if (!chosen) { toast('该平台没有可用的登录方式。'); return; }
+  if (chosen === 'password') return connectPassword(pid);
+  return connectQr(pid);
+}
+
+async function connectQr(pid) {
   closeModal();
   const generation = challengeGeneration;
   const result = await api(platformPath(pid) + '/login', { method: 'POST', body: { method: 'qr' } });
@@ -265,6 +274,29 @@ async function connect(pid) {
   const image = typeof challenge.image === 'string' && /^(data:image\/(png|jpeg|gif|webp|svg\+xml)[;,]|https:\/\/)/i.test(challenge.image) ? challenge.image : '';
   openModal('login', view.modalFrame(`连接${name}`, `<div class="qr-area">${image ? `<img class="qr" src="${view.esc(image)}" alt="${view.esc(name)}登录二维码">` : '<p>平台尚未提供二维码，请稍后重试。</p>'}<p>使用平台官方应用扫码，并在手机上确认登录。</p><span id="challenge-status" class="badge">等待扫码</span></div>`), { pid });
   const handle = challenge.session || challenge.id;
+  challengeTimer = setTimeout(() => void pollChallenge(pid, handle, generation), 1500);
+}
+
+async function connectPassword(pid) {
+  closeModal();
+  const generation = challengeGeneration;
+  const result = await api(platformPath(pid) + '/login', { method: 'POST', body: { method: 'password' } });
+  if (generation !== challengeGeneration || !state.me) return;
+  const challenge = result.challenge;
+  const name = state.platforms.find((p) => p.id === pid)?.name || pid;
+  const handle = challenge.session || challenge.id;
+  const fields = Array.isArray(challenge.fields) && challenge.fields.length ? challenge.fields : [
+    { name: 'username', label: '账号', type: 'text', required: true, autocomplete: 'username' },
+    { name: 'password', label: '密码', type: 'password', required: true, autocomplete: 'current-password' },
+  ];
+  const inputs = fields.map((field) => {
+    const type = field.type === 'password' ? 'password' : field.type === 'email' ? 'email' : field.type === 'tel' ? 'tel' : 'text';
+    const required = field.required === false ? '' : ' required';
+    const autocomplete = field.autocomplete ? ` autocomplete="${view.esc(field.autocomplete)}"` : '';
+    const placeholder = field.placeholder ? ` placeholder="${view.esc(field.placeholder)}"` : '';
+    return `<label>${view.esc(field.label || field.name)}<input name="${view.esc(field.name)}" type="${type}"${required}${autocomplete}${placeholder}></label>`;
+  }).join('');
+  openModal('login', view.modalFrame(`连接${name}`, `<form id="login-form" data-pid="${view.esc(pid)}" data-challenge="${view.esc(handle)}">${inputs}<p class="form-error" role="alert" hidden></p><div class="actions"><button class="button primary" type="submit">登录</button><button class="button" type="button" data-action="modal-close">取消</button></div></form><p><span id="challenge-status" class="badge">等待登录</span></p>`), { pid });
   challengeTimer = setTimeout(() => void pollChallenge(pid, handle, generation), 1500);
 }
 
@@ -282,7 +314,7 @@ async function pollChallenge(pid, handle, generation) {
       return;
     }
     const terminal = ['expired', 'failed'].includes(result.state);
-    $('#challenge-status').textContent = ({ waiting: '等待扫码', scanned: '已扫码，等待手机确认', expired: '二维码已过期，请关闭后重新连接', failed: '连接失败，请关闭后重试' })[result.state] || '等待手机确认';
+    $('#challenge-status').textContent = ({ waiting: '等待平台确认', scanned: '已扫码，等待手机确认', expired: '登录已过期，请关闭后重新连接', failed: '连接失败，请关闭后重试' })[result.state] || '等待平台确认';
     if (!terminal) challengeTimer = setTimeout(() => void pollChallenge(pid, handle, generation), 2000);
   } catch (error) {
     if (generation === challengeGeneration && $('#challenge-status')) $('#challenge-status').textContent = error.message;
@@ -328,7 +360,7 @@ document.addEventListener('change', (event) => {
 
 document.addEventListener('submit', async (event) => {
   const form = event.target;
-  if (!(form instanceof HTMLFormElement) || ![...features.formIds, 'auth-form', 'install-form', 'config-form'].includes(form.id)) return;
+  if (!(form instanceof HTMLFormElement) || ![...features.formIds, 'auth-form', 'install-form', 'config-form', 'login-form'].includes(form.id)) return;
   event.preventDefault();
   if (pending.has(form.id)) return;
   pending.add(form.id);
@@ -349,6 +381,15 @@ document.addEventListener('submit', async (event) => {
       await refreshConnections();
       renderPage();
       toast('模块已安装。前往平台连接，即可连接账号。');
+    } else if (form.id === 'login-form') {
+      const pid = form.dataset.pid;
+      const challenge = form.dataset.challenge;
+      const fields = {};
+      for (const [key, value] of Object.entries(data)) if (!key.startsWith('__')) fields[key] = String(value);
+      const result = await api(platformPath(pid) + '/login/' + encodeURIComponent(challenge) + '/submit', { method: 'POST', body: { fields } });
+      if (result.state === 'failed') throw new Error(result.message || '登录失败，请检查账号密码。');
+      if (result.state === 'expired') throw new Error('登录已过期，请重新连接。');
+      challengeTimer = setTimeout(() => void pollChallenge(pid, challenge, challengeGeneration), 800);
     } else {
       const settings = JSON.parse(data.settings);
       if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('模块设置必须是 JSON 对象。');
@@ -391,7 +432,7 @@ document.addEventListener('click', async (event) => {
       renderCourseSearch();
     } else if (action === 'clear-search') { state.search = ''; state.filter = 'all'; renderPage(); }
     else if (action === 'task-filter') { state.taskFilter = target.dataset.value; renderPage(); }
-    else if (action === 'connect') await connect(id);
+    else if (action === 'connect') await connect(id, target.dataset.method);
     else if (action === 'disconnect') {
       await api(platformPath(id) + '/disconnect', { method: 'POST' });
       delete state.courseLists[id];
