@@ -23,6 +23,26 @@ const question = (id: string, answer: string[] = []) => ({ id, kind: 'single', t
 const paper = { id: 'paper', name: '模拟作业', category: '作业', available: true, done: false, can_redo: true, score: null };
 const attempt = { id: 'attempt-1', paper_id: 'paper', name: '模拟作业', questions: [question('old', ['a']), question('new')], expires_at: null };
 
+test('见面课播放器需要处理时暂停保留检查点，诊断可导出且继续后只认平台确认', async (t) => {
+  const { runtime } = await boot(); t.after(() => runtime.close());
+  const session = await setupAdmin(runtime); const { owner, course } = await connected(runtime, session);
+  let confirmed = false;
+  runtime.manager.invoke = async (_o, _p, method, params) => {
+    assert.equal(method, 'activity.step');
+    if (confirmed) { assert.deepEqual(params.checkpoint, { snapshot: 'retained' }); return { status: 'completed', detail: '平台已确认签到' }; }
+    return { status: 'needs_human', reason: '官方回放初始化超时：等待观看历史', checkpoint: { snapshot: 'retained' }, diagnostic: { phase: 'history', readiness: { history: false } } };
+  };
+  const task = runtime.jobs.create(owner, { platform: 'sim', course, unit_ids: ['meeting'], operation: 'meeting' });
+  await waitFor(runtime, session, task.id, 'paused');
+  assert.match(runtime.jobs.get(owner, task.id).detail, /初始化超时/);
+  assert.equal(runtime.jobs.get(owner, task.id).completed.length, 0);
+  const response = await runtime.app.inject({ url: `/api/tasks/${task.id}/logs`, headers: { cookie: `cf_session=${session.token}` } });
+  assert.match(response.body, /history/); assert.match(response.body, /初始化超时/); assert.doesNotMatch(response.body, /待人工处理/);
+  confirmed = true; runtime.jobs.resume(owner, task.id);
+  await waitFor(runtime, session, task.id, 'completed');
+  assert.equal(runtime.jobs.get(owner, task.id).completed.length, 1);
+});
+
 test('人工补答保留原答案，确认后交卷，并加密保存可导出的确认记录', async (t) => {
   const { runtime } = await boot(); t.after(() => runtime.close());
   const session = await setupAdmin(runtime); const { owner, course } = await connected(runtime, session);

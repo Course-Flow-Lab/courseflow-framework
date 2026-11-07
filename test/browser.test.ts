@@ -23,7 +23,7 @@ test('平台父域 Cookie 进入 Chromium 后仍可用于回放子域，旧会�
 });
 
 const scriptFile = new URL('../../courseflow-zhs/src/zhs/features/meeting.js', import.meta.url);
-test('官方播放器等待 SSO 和观看历史，沿用页面 Map 并按缺失分钟续播', { skip: !fs.existsSync(scriptFile) && '相邻智慧树模块源码不存在，跳过模块页面脚本检查' }, () => {
+test('官方播放器等待观看历史，标志复位后仍能续播，兼容页面 Map 与原生 Map', { skip: !fs.existsSync(scriptFile) && '相邻智慧树模块源码不存在，跳过模块页面脚本检查' }, () => {
   const script = fs.readFileSync(scriptFile, 'utf8');
   let starts = 0;
   class OfficialMap { size() { return 2; } }
@@ -31,7 +31,7 @@ test('官方播放器等待 SSO 和观看历史，沿用页面 Map 并按缺失�
   const page: any = {
     location: { hostname: 'passport.zhihuishu.com' }, Map: OfficialMap,
     document: { querySelector: (selector: string) => selector.includes('video') ? video : { textContent: '20%' } },
-    videoFlag: true, courseEndStatus: 1, videoStartEndmap: new OfficialMap(),
+    videoFlag: false, watchHistoryFlag: false, courseEndStatus: 1, videoStartEndmap: new OfficialMap(),
     videoInfo: [{ id: 'first', duration: 125 }, { id: 'second', duration: 120 }], watchHistoryBack: ['1', '2'], curVideoId: 'first',
     onPaly: (id: string, index: number) => { starts++; assert.equal(id, 'first'); assert.equal(index, 0); },
   };
@@ -44,6 +44,10 @@ test('官方播放器等待 SSO 和观看历史，沿用页面 Map 并按缺失�
   assert.equal(playing.position, 12); assert.equal(starts, 1); assert.equal(page.seekTime, 120);
   assert.equal(page.Map, OfficialMap); assert.equal(video.playbackRate, 1);
   vm.runInContext(script, context); assert.equal(starts, 1);
+  video.currentTime = 20;
+  assert.equal(vm.runInContext(script, context).position, 20);
+  page.__courseflowStarted = false; page.videoStartEndmap = new Map([['first', [0, 3]]]);
+  assert.equal(vm.runInContext(script, context).position, 20); assert.equal(starts, 2);
   page.__courseflowObserved = { '/getWatchHistory': { error: '登录已过期', code: 'platform_login_expired' } };
   assert.equal(vm.runInContext(script, context).authentication_required, true);
 });

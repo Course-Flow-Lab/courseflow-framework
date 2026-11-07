@@ -6,6 +6,7 @@ import type { createAccess } from './access.ts';
 import type { AiService } from '../services/ai.ts';
 import type { AnswerMemory } from '../services/answers.ts';
 import type { BrowserService } from '../services/browser.ts';
+import type { LogStore } from '../services/logs.ts';
 
 export type ServerServices = {
   config: Config;
@@ -17,6 +18,7 @@ export type ServerServices = {
   ai: AiService;
   memory: AnswerMemory;
   browser: BrowserService;
+  logs: LogStore;
 };
 
 export type ServerContext = ServerServices & { access: ReturnType<typeof createAccess> };

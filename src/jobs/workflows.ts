@@ -91,6 +91,14 @@ async function activity(c: WorkflowContext) {
       const position = c.checkpoint.positions[id] ?? null;
       const result = await call(c, 'activity.step', { operation: c.task.operation, item_id: id, checkpoint: position,
         options: { ...c.input.options, execution_id: `${c.task.id}/${c.task.generation}` } });
+      if (result.diagnostic != null) {
+        const diagnostic = JSON.stringify(result.diagnostic).slice(0, 4000);
+        c.checkpoint.activity_diagnostics ??= {};
+        if (c.checkpoint.activity_diagnostics[id] !== diagnostic) {
+          c.checkpoint.activity_diagnostics[id] = diagnostic;
+          c.event('diagnostic', `活动状态：${diagnostic}`);
+        }
+      }
       if (result.checkpoint !== undefined) c.checkpoint.positions[id] = result.checkpoint;
       c.save();
       if (result.status === 'completed') {
@@ -114,7 +122,7 @@ async function activity(c: WorkflowContext) {
         continue;
       }
       if (['blocked', 'needs_human', 'unknown'].includes(result.status)) {
-        if (c.task.operation === 'meeting' && result.status !== 'unknown') {
+        if (c.task.operation === 'meeting' && result.status === 'blocked') {
           c.checkpoint.skipped ??= []; c.checkpoint.skipped.push({ id, reason: String(result.reason ?? '需要人工核对') });
           c.event('skipped', `见面课待人工处理：${String(result.reason)}`); c.save(); break;
         }

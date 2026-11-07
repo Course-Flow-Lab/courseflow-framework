@@ -1,6 +1,8 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { AppError, badRequest } from '../core/errors.ts';
-import { createAccess } from './access.ts';
+import { createAccess, readCookie } from './access.ts';
+import { identity } from '../core/auth.ts';
+import { nowSeconds } from '../core/domain.ts';
 import type { ServerContext, ServerServices } from './context.ts';
 import { registerWebRoutes } from './web.ts';
 import { registerSystemRoutes } from './routes/system.ts';
@@ -10,10 +12,21 @@ import { registerTasksRoutes } from './routes/tasks.ts';
 import { registerModulesRoutes } from './routes/modules.ts';
 import { registerSettingsRoutes } from './routes/settings.ts';
 import { registerFeaturesRoutes } from './routes/features.ts';
+import { registerLogsRoutes } from './routes/logs.ts';
 
 export function createApp(services: ServerServices): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 1_048_576, trustProxy: false });
   const context: ServerContext = { ...services, access: createAccess(services.db, services.config) };
+  const actors = new WeakMap<object, string | null>();
+  app.addHook('onRequest', async (request) => {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(request.method) || !request.url.startsWith('/api/')) return;
+    const token = readCookie(request, 'cf_session');
+    actors.set(request, token ? identity(services.db, token, nowSeconds())?.user.id ?? null : null);
+  });
+  app.addHook('onResponse', async (request, reply) => {
+    if (!actors.has(request)) return;
+    services.logs.audit(actors.get(request) ?? null, '接口操作', { method: request.method, route: request.routeOptions.url ?? request.url.split('?')[0]!, status: reply.statusCode });
+  });
 
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (_request, body, done) => {
     const text = typeof body === 'string' ? body.trim() : '';
@@ -30,7 +43,7 @@ export function createApp(services: ServerServices): FastifyInstance {
     const failure = error as { statusCode?: number; message?: string };
     const status = failure.statusCode ?? 500;
     const message = failure.message ?? '服务内部错误';
-    if (status >= 500) services.log('error', `${request.method} ${request.url} 失败：${message}`);
+    if (status >= 500) services.log('error', `${request.method} ${request.routeOptions.url ?? request.url.split('?')[0]} 失败：${message}`);
     return reply.status(status >= 400 && status < 600 ? status : 500)
       .send({ error: { code: 'internal_error', message } });
   });
@@ -42,5 +55,6 @@ export function createApp(services: ServerServices): FastifyInstance {
   registerModulesRoutes(app, context);
   registerSettingsRoutes(app, context);
   registerFeaturesRoutes(app, context);
+  registerLogsRoutes(app, context);
   return app;
 }
