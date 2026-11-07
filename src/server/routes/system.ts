@@ -6,6 +6,7 @@ import { hasUsers, identity } from '../../core/auth.ts';
 import { nowSeconds, quietStatus } from '../../core/domain.ts';
 import { MODULE_API } from '../../modules/protocol.ts';
 import { FRAMEWORK_VERSION as VERSION } from '../../version.ts';
+import { registrationSettings } from '../../core/invitations.ts';
 
 export function registerSystemRoutes(app: FastifyInstance, { db, manager }: ServerContext): void {
   app.get('/healthz', async () => ({
@@ -29,6 +30,7 @@ export function registerSystemRoutes(app: FastifyInstance, { db, manager }: Serv
       version: VERSION,
       module_api: MODULE_API,
       setup_required: !hasUsers(db),
+      registration: registrationSettings(db),
       quiet_hours: current ? quietFor(db, current.user.id) : quietStatus(nowSeconds()),
       capabilities: { modules: true, platforms: true, jobs: ['study', 'trial', 'review', 'answer', 'mastery', 'meeting', 'qa', 'ask'], task_controls: ['pause', 'resume', 'stop', 'move', 'answers', 'confirm', 'readback'], models: true, exports: ['md', 'docx', 'json', 'csv', 'log'], logs: true, sse: false },
     };

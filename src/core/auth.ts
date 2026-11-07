@@ -3,6 +3,7 @@ import { pbkdf2Sync, timingSafeEqual } from 'node:crypto';
 import type { Db } from './db.ts';
 import { digest, randomId, randomToken } from './domain.ts';
 import { badRequest, conflict } from './errors.ts';
+import { registrationInvitation, useInvitation } from './invitations.ts';
 
 export const SESSION_TTL = 7 * 86400;
 
@@ -108,11 +109,15 @@ export async function createUser(
   now: number,
 ): Promise<{ id: string; username: string; role: Role }> {
   validateCredentials(username, password);
-  if (db.get('SELECT 1 FROM users WHERE username = ?1', username)) {
+  const hash = await hashPassword(password);
+  return db.transaction(() => insertUser(db, username, hash, role, now));
+}
+
+function insertUser(db: Db, username: string, hash: string, role: Role, now: number) {
+  if (db.get('SELECT 1 FROM users WHERE username = ?1 COLLATE NOCASE', username)) {
     throw conflict('username_taken', '这个用户名已存在');
   }
   const id = randomId();
-  const hash = await hashPassword(password);
   db.run(
     'INSERT INTO users(id,username,password_hash,role,created_at) VALUES(?1,?2,?3,?4,?5)',
     id,
@@ -122,4 +127,18 @@ export async function createUser(
     now,
   );
   return { id, username, role };
+}
+
+export async function registerUser(db: Db, username: string, password: string, code: unknown, now: number) {
+  validateCredentials(username, password);
+  if (!hasUsers(db)) throw conflict('setup_required', '请先由管理员完成站点初始化');
+  registrationInvitation(db, code);
+  const hash = await hashPassword(password);
+  return db.transaction(() => {
+    const invitation = registrationInvitation(db, code);
+    const user = insertUser(db, username, hash, 'user', now);
+    if (invitation) useInvitation(db, invitation, user.id, now);
+    const session = createSession(db, user.id, now);
+    return { user, session };
+  });
 }

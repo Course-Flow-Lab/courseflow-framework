@@ -9,6 +9,7 @@ const ASSETS = [
   ['/api.js', 'api.js', 'text/javascript'],
   ['/qa.js', 'qa.js', 'text/javascript'],
   ['/logs.js', 'logs.js', 'text/javascript'],
+  ['/invitations.js', 'invitations.js', 'text/javascript'],
   ['/features.js', 'features.js', 'text/javascript'],
   ['/views.js', 'views.js', 'text/javascript'],
 ] as const;
