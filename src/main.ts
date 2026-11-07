@@ -60,7 +60,7 @@ async function main(): Promise<void> {
         for (const row of runtime.manager.list()) {
           console.log(
             `${row.id.padEnd(12)} ${row.version.padEnd(8)} ${row.engine.padEnd(6)} ` +
-              `${row.enabled === 1 ? 'enabled ' : 'disabled'} ${row.running ? 'running' : 'stopped'} ` +
+              `${row.enabled === 1 ? '已启用' : '已停用'} ${row.running ? '运行中' : '已停止'} ` +
               `${row.sha256.slice(0, 12)} ${row.manifestJson.name}`,
           );
         }
@@ -122,7 +122,7 @@ async function main(): Promise<void> {
   }
   const { host, port } = bindAddress(config.bind);
   await runtime.app.listen({ host, port });
-  process.stderr.write(`Courseflow listening on ${config.publicUrl}（数据目录 ${config.dataDir}）\n`);
+  process.stderr.write(`Courseflow 已监听 ${config.publicUrl}（数据目录 ${config.dataDir}）\n`);
   if (fs.existsSync(path.join(config.modulesDir))) {
     process.stderr.write(`模块目录 ${config.modulesDir}\n`);
   }

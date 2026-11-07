@@ -1,11 +1,12 @@
 import { createApi, platformPath, coursePath, parseRoute } from './api.js';
 import * as view from './views.js';
+import * as features from './features.js';
 
 const $ = (selector) => document.querySelector(selector);
 const state = {
   me: null, csrf: '', bootstrap: null, platforms: [], modules: [], tasks: [],
   courseLists: {}, courseErrors: {}, course: null, units: [], presentation: null,
-  selected: new Set(), route: parseRoute(location.hash), loading: false,
+  settings: null, feature: null, selected: new Set(), route: parseRoute(location.hash), loading: false,
   search: '', filter: 'all', taskFilter: 'all', modal: null,
 };
 let routeGeneration = 0;
@@ -49,7 +50,7 @@ function expireSession() {
   routeGeneration += 1;
   clearTimeout(refreshTimer);
   closeModal();
-  Object.assign(state, { me: null, csrf: '', platforms: [], modules: [], tasks: [], courseLists: {}, courseErrors: {}, course: null, units: [], selected: new Set() });
+  Object.assign(state, { me: null, csrf: '', platforms: [], modules: [], tasks: [], courseLists: {}, courseErrors: {}, course: null, units: [], settings: null, feature: null, selected: new Set() });
   $('#workspace').hidden = true;
   $('#auth').hidden = false;
   $('#auth').innerHTML = view.authView(state.bootstrap);
@@ -60,7 +61,7 @@ function renderNavigation() {
   $('#sidebar-nav').innerHTML = view.navigation(state);
   $('#account-link').innerHTML = `<span class="avatar">${view.esc([...state.me.user.username][0].toUpperCase())}</span><span><strong>${view.esc(state.me.user.username)}</strong><small>${state.me.user.role === 'admin' ? '管理员' : '成员'}</small></span><span class="spacer"></span><span class="muted">⌄</span>`;
   $('#mobile-nav').innerHTML = [['courses', '课程', 'grid'], ['tasks', '任务', 'tasks'], ['connections', '连接', 'link'], ['account', '我的', 'user']].map(([page, label, icon]) => `<a href="#/${page}" class="${state.route.page === page || page === 'courses' && state.route.page === 'course' ? 'active' : ''}">${view.icon(icon)}<span>${label}</span></a>`).join('');
-  const name = ({ courses: '所有课程', course: state.course?.name || '课程目录', tasks: '任务中心', connections: '平台连接', modules: '模块管理', account: '我的账号' })[state.route.page] || '页面不存在';
+  const name = ({ courses: '所有课程', course: state.course?.name || '课程目录', tasks: '任务中心', connections: '平台连接', modules: '模块管理', account: '我的账号', settings: '模型与任务设置' })[state.route.page] || '页面不存在';
   const platform = state.platforms.find((p) => p.id === state.route.pid);
   $('#breadcrumb').innerHTML = `<a href="#/courses">工作台</a><span>/</span>${platform ? `<a href="#/platform/${encodeURIComponent(platform.id)}">${view.esc(platform.name)}</a><span>/</span>` : ''}<strong>${view.esc(state.route.page === 'courses' && platform ? '课程' : name)}</strong>`;
   document.title = `${state.route.page === 'courses' && platform ? platform.name : name} · Courseflow`;
@@ -81,8 +82,8 @@ function renderTasks() {
 
 function renderPage() {
   if (!state.me) return;
-  const render = ({ courses: view.coursesView, course: view.courseView, tasks: view.tasksView,
-    connections: view.connectionsView, modules: view.modulesView, account: view.accountView })[state.route.page];
+  const render = ({ courses: view.coursesView, course: (s) => view.courseView(s, features.courseContent(s)), tasks: view.tasksView,
+    connections: view.connectionsView, modules: view.modulesView, account: view.accountView, settings: features.settingsView })[state.route.page];
   $('#page').innerHTML = render ? render(state) : view.empty('这个页面不存在', '从课程工作台继续浏览。', '<a class="button primary" href="#/courses">返回课程</a>');
   renderNavigation();
   renderTasks();
@@ -138,12 +139,13 @@ async function loadRoute(force = false) {
   const generation = ++routeGeneration;
   closeModal();
   state.route = parseRoute(location.hash);
+  $('.page-scroll').scrollTop = 0;
   state.course = null;
   state.units = [];
   state.presentation = null;
   state.selected = new Set();
   $('#page-error').hidden = true;
-  state.loading = ['courses', 'course'].includes(state.route.page);
+  state.loading = ['courses', 'course', 'settings'].includes(state.route.page);
   renderPage();
   try {
     if (state.route.page === 'courses') {
@@ -163,8 +165,9 @@ async function loadRoute(force = false) {
         state.course = result.course;
         state.units = result.units;
         state.presentation = result.ui;
-      } else { state.course = course; }
-    }
+      } else { const result = await api(coursePath(route.pid, course) + '/details'); if (generation !== routeGeneration) return; state.course = course; state.presentation = result.ui; }
+      await features.load(state, api, () => generation === routeGeneration && Boolean(state.me));
+    } else if (state.route.page === 'settings') await features.load(state, api, () => generation === routeGeneration && Boolean(state.me));
   } catch (error) {
     if (generation === routeGeneration && state.me) showError(error);
   } finally {
@@ -202,6 +205,7 @@ async function refreshTasks() {
     renderQuiet();
     updateSelection();
   }
+  if (changed && state.modal?.kind === 'task') { const current = state.tasks.find((t) => t.id === state.modal.id); if (current && current.state !== state.modal.taskState) await showTask(current.id); }
   setConnection(true);
 }
 
@@ -285,12 +289,15 @@ async function pollChallenge(pid, handle, generation) {
   }
 }
 
+function featureContext() { return { state, api, openModal, closeModal, renderPage, refreshTasks, showTask, toast }; }
+
 async function showTask(id) {
+  const modalVersion = challengeGeneration;
   const generation = sessionGeneration;
   const route = routeGeneration;
   const result = await api('/api/tasks/' + encodeURIComponent(id));
-  if (generation !== sessionGeneration || route !== routeGeneration) return;
-  openModal('task', view.taskDetailView(result.task, result.events, state.bootstrap.quiet_hours.active), { id });
+  if (generation !== sessionGeneration || route !== routeGeneration || modalVersion !== challengeGeneration) return;
+  openModal('task', features.taskDetail(result, state.bootstrap.quiet_hours.active), { id, taskState: result.task.state });
 }
 
 function renderCourseSearch() {
@@ -321,7 +328,7 @@ document.addEventListener('change', (event) => {
 
 document.addEventListener('submit', async (event) => {
   const form = event.target;
-  if (!(form instanceof HTMLFormElement) || !['auth-form', 'install-form', 'config-form'].includes(form.id)) return;
+  if (!(form instanceof HTMLFormElement) || ![...features.formIds, 'auth-form', 'install-form', 'config-form'].includes(form.id)) return;
   event.preventDefault();
   if (pending.has(form.id)) return;
   pending.add(form.id);
@@ -331,7 +338,8 @@ document.addEventListener('submit', async (event) => {
   submit.disabled = true;
   const data = Object.fromEntries(new FormData(form));
   try {
-    if (form.id === 'auth-form') {
+    if (features.formIds.includes(form.id)) await features.submit(form, featureContext());
+    else if (form.id === 'auth-form') {
       const path = state.bootstrap?.setup_required ? '/api/auth/setup' : '/api/auth/login';
       await api(path, { method: 'POST', body: data });
       await loadWorkspace();
@@ -366,6 +374,7 @@ document.addEventListener('click', async (event) => {
   pending.add(key);
   target.disabled = true;
   try {
+    if (await features.action(target, featureContext())) return;
     if (action === 'theme') setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
     else if (action === 'find') {
       focusSearch = true;

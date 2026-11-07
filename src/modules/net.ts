@@ -133,6 +133,9 @@ export async function performFetch(
     cookies: Cookie[];
     token: string;
     now: number;
+    binary?: boolean;
+    beforeRequest?: () => void;
+    signal?: AbortSignal;
   },
 ): Promise<FetchOutcome> {
   let url: URL;
@@ -157,6 +160,7 @@ export async function performFetch(
   let body = request.body;
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    options.beforeRequest?.();
     const headers: Record<string, string> = { ...request.headers };
     const cookie = cookieHeaderFor(jar, current, options.now);
     if (cookie) headers.cookie = cookie;
@@ -168,6 +172,7 @@ export async function performFetch(
       headers,
       body: method === 'GET' || method === 'HEAD' ? undefined : (body ?? undefined),
       redirect: 'manual',
+      signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(25_000)]) : AbortSignal.timeout(25_000),
     });
 
     const setCookies = response.headers.getSetCookie?.() ?? [];
@@ -191,7 +196,7 @@ export async function performFetch(
         return {
           status: response.status,
           headers: Object.fromEntries(response.headers.entries()),
-          body: await response.text(),
+          body: await boundedBody(response, options.binary),
           setCookies: collected,
           finalUrl: current.toString(),
         };
@@ -205,18 +210,37 @@ export async function performFetch(
         body = null;
       }
       current = next;
+      await response.body?.cancel();
       continue;
     }
 
     return {
       status: response.status,
       headers: Object.fromEntries(response.headers.entries()),
-      body: await response.text(),
+      body: await boundedBody(response, options.binary),
       setCookies: collected,
       finalUrl: current.toString(),
     };
   }
   throw new NetError('net_blocked', '重定向次数过多');
+}
+
+async function boundedBody(response: Response, binary = false): Promise<string> {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.length;
+      if (size > 8_000_000) throw new NetError('platform_protocol_changed', '平台响应超过大小限制');
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  const bytes = Buffer.concat(chunks);
+  return bytes.toString(binary ? 'base64' : 'utf8');
 }
 
 export function mapPlatformStatus(status: number): NetError | undefined {

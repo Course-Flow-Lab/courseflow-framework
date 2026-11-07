@@ -14,7 +14,21 @@ export function registerTasksRoutes(app: FastifyInstance, context: ServerContext
     return {
       task: jobs.get(current.user.id, request.params.id),
       events: jobs.events(current.user.id, request.params.id),
+      ...jobs.details(current.user.id, request.params.id),
     };
+  });
+
+  app.post<{ Params: { id: string }; Body: { answers?: Record<string, string[]>; text?: string; replace_existing?: boolean } }>('/api/tasks/:id/answers', async (request) => {
+    const who = requireIdentity(request, { write: true }); return { task: jobs.answers(who.user.id, request.params.id, request.body ?? {}) };
+  });
+  app.post<{ Params: { id: string } }>('/api/tasks/:id/confirm', async (request) => {
+    const who = requireIdentity(request, { write: true }); return { task: jobs.confirm(who.user.id, request.params.id) };
+  });
+  app.post<{ Params: { id: string } }>('/api/tasks/:id/readback', async (request) => {
+    const who = requireIdentity(request, { write: true }); return { task: await jobs.reconcile(who.user.id, request.params.id) };
+  });
+  app.post<{ Params: { id: string }; Body: { direction?: string } }>('/api/tasks/:id/move', async (request) => {
+    const who = requireIdentity(request, { write: true }); return { task: jobs.move(who.user.id, request.params.id, request.body?.direction ?? '') };
   });
 
   app.post<{ Params: { id: string } }>('/api/tasks/:id/pause', async (request) => {

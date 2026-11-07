@@ -1,9 +1,9 @@
 {
   "name": "courseflow-framework",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
-  "description": "Node.js framework that hosts Courseflow platform modules",
+  "description": "基于 Node.js 的课程工作台与平台模块宿主",
   "license": "MIT",
   "engines": {
     "node": ">=24"

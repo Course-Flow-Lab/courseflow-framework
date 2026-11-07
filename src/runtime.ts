@@ -8,6 +8,9 @@ import { ModuleManager } from './modules/manager.ts';
 import { JobEngine } from './jobs/engine.ts';
 import { createApp } from './server/app.ts';
 import { FRAMEWORK_VERSION } from './version.ts';
+import { AiService } from './services/ai.ts';
+import { AnswerMemory } from './services/answers.ts';
+import { BrowserService } from './services/browser.ts';
 
 export const VERSION = FRAMEWORK_VERSION;
 export { FRAMEWORK_VERSION };
@@ -19,6 +22,9 @@ export type Runtime = {
   sessions: Sessions;
   manager: ModuleManager;
   jobs: JobEngine;
+  ai: AiService;
+  memory: AnswerMemory;
+  browser: BrowserService;
   app: FastifyInstance;
   setupCode: string;
   close: () => Promise<void>;
@@ -46,21 +52,25 @@ export async function createRuntime(
   const db = new Db(config.dbPath);
   try {
     const hasSecrets = db.get<{ present: number }>(
-      'SELECT EXISTS(SELECT 1 FROM secrets) AS present',
+      'SELECT (EXISTS(SELECT 1 FROM secrets) OR EXISTS(SELECT 1 FROM ai_models) OR EXISTS(SELECT 1 FROM task_inputs) OR EXISTS(SELECT 1 FROM module_state) OR EXISTS(SELECT 1 FROM answer_memory) OR EXISTS(SELECT 1 FROM media_assets)) AS present',
     )?.present === 1;
     const vault = Vault.open(config.keyPath, hasSecrets);
     const sessions = new Sessions(db, vault);
-    const manager = new ModuleManager({ db, vault, sessions, modulesDir: config.modulesDir, log });
-    const jobs = new JobEngine({ db, vault, manager, log, recoverInterrupted: options.recoverTasks });
+    const ai = new AiService(db, vault);
+    const memory = new AnswerMemory(db, vault);
+    const browser = new BrowserService(config.dataDir);
+    const manager = new ModuleManager({ db, vault, sessions, modulesDir: config.modulesDir, log, ai, browser });
+    const jobs = new JobEngine({ db, vault, manager, log, ai, memory, recoverInterrupted: options.recoverTasks });
     const setupCode = options.setupCode ?? randomToken().slice(0, 32);
-    const app = createApp({ config, db, manager, jobs, setupCode, log });
+    const app = createApp({ config, db, manager, jobs, setupCode, log, ai, memory, browser });
     let closing: Promise<void> | undefined;
     return {
-      config, db, vault, sessions, manager, jobs, app, setupCode,
+      config, db, vault, sessions, manager, jobs, app, setupCode, ai, memory, browser,
       close: () => closing ??= (async () => {
         await app.close();
         await jobs.shutdown();
         await manager.stopAll();
+        await browser.shutdown();
         db.close();
       })(),
     };

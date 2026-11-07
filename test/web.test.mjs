@@ -23,7 +23,7 @@ test('module-provided text is escaped and progress stays within native progress 
   assert.ok(!html.includes('style='), 'CSP must not need inline progress styles');
 });
 
-test('unsupported contributed tabs remain disabled and completed units cannot be selected', () => {
+test('course feature tabs navigate and completed units cannot be selected', () => {
   const html = courseView({
     loading: false, route: { pid: 'example' },
     course: { name: 'Course', outline_available: true, kind: 'shared' },
@@ -32,6 +32,7 @@ test('unsupported contributed tabs remain disabled and completed units cannot be
     presentation: { tabs: [{ id: 'answer', label: '答题' }] }, selected: new Set(),
     bootstrap: { quiet_hours: { active: false }, capabilities: { jobs: ['study'] } },
   });
-  assert.match(html, /disabled title="框架尚未接入此功能"/);
+  assert.match(html, /href="[^"]*\/answer"/);
+  assert.ok(!html.includes('待接入'));
   assert.match(html, /data-unit="done" disabled/);
 });

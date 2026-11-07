@@ -8,6 +8,8 @@ import { registerAuthRoutes } from './routes/auth.ts';
 import { registerPlatformsRoutes } from './routes/platforms.ts';
 import { registerTasksRoutes } from './routes/tasks.ts';
 import { registerModulesRoutes } from './routes/modules.ts';
+import { registerSettingsRoutes } from './routes/settings.ts';
+import { registerFeaturesRoutes } from './routes/features.ts';
 
 export function createApp(services: ServerServices): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 1_048_576, trustProxy: false });
@@ -38,5 +40,7 @@ export function createApp(services: ServerServices): FastifyInstance {
   registerPlatformsRoutes(app, context);
   registerTasksRoutes(app, context);
   registerModulesRoutes(app, context);
+  registerSettingsRoutes(app, context);
+  registerFeaturesRoutes(app, context);
   return app;
 }

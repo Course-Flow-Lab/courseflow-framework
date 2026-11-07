@@ -1,63 +1,36 @@
-# Courseflow module API v1
+# Courseflow 模块 API v1
 
-**Status:** draft, `moduleApi: 1`. Everything here is a contract between the framework and a
-platform module. Both sides may be written in any language; only the wire format is specified.
+本文描述框架与独立平台模块之间的实际协议。当前框架 `0.1.1` 仅支持 `moduleApi: 1`。新增可选方法使用框架版本范围控制兼容性，不承诺尚未实现的上一代主版本兼容。
 
-A module is a **child process** that speaks newline-delimited JSON-RPC on stdin/stdout. It never
-opens a socket, never reads a credential, and never touches the database. The framework owns
-HTTP, sessions, storage and time.
+模块是常驻子进程，stdin／stdout 使用 UTF-8、每行一个 JSON 对象的 JSON-RPC 2.0。`error.code` 使用稳定字符串；通知没有 `id`。stdout 只能输出协议，日志写 stderr。模块的网络、状态、模型和浏览器操作经宿主服务调用。
 
-- Framework: Node.js + TypeScript, one process.
-- Module: any executable (this repository ships `courseflow-zhs` in Rust).
-- Transport: one JSON object per line, UTF-8, `\n` terminated, on stdin and stdout.
-- stderr is for logs and is never parsed. **stdout is protocol-only.**
+## 清单与安装
 
----
-
-## 1. Artifact and manifest
-
-A module directory contains:
-
-```
-courseflow.module.json     manifest (below)
-<entry>                    executable or ESM entry point, per manifest.runtime
-README.md                  optional
-```
-
-Packed as an npm-style `.tgz` (`package/` root) or installed from a directory.
-
-```jsonc
+```json
 {
   "schemaVersion": 1,
-  "id": "zhs",                        // unique, stable, equals the platform id
-  "name": "智慧树",
+  "id": "demo",
+  "name": "示例平台",
   "version": "0.1.0",
-  "moduleApi": 1,                     // integer major gate
-  "engines": { "framework": ">=0.1.0-0 <0.2.0" },   // semver range, must not be "*"
-  "runtime": {
-    "engine": "binary",               // "binary" | "node"
-    "entry": "target/release/courseflow-zhs",
-    "files": ["assets/"]              // optional extra files copied on install
-  },
+  "moduleApi": 1,
+  "engines": { "framework": ">=0.1.1 <0.2.0" },
+  "runtime": { "engine": "node", "entry": "index.mjs", "files": [] },
   "platform": {
-    "id": "zhs",
-    "name": "智慧树",
-    "short": "智慧树",
-    "login": ["qr"],                  // qr | password | browser
-    "operations": ["study", "review", "meeting", "answer", "mastery", "qa", "ask"],
+    "id": "demo",
+    "name": "示例平台",
+    "short": "示例",
+    "login": ["qr"],
+    "operations": ["study", "answer"],
     "unit_kinds": ["video", "document"],
-    "max_speed": 1.5,                 // optional
+    "max_speed": 1.5,
+    "keepalive_seconds": 300,
     "presentation": {
-      "tabs": [
-        { "id": "qa", "label": "问答区", "when": { "course.kind": "shared" } }
-      ],
-      "actions": [
-        { "id": "trial", "label": "短时试跑", "when": { "course.family": "shared" } }
-      ]
+      "tabs": [{ "id": "answer", "label": "作业与考试" }],
+      "actions": [{ "id": "trial", "label": "短时试跑", "when": { "course.kind": "shared" } }]
     }
   },
   "permissions": {
-    "network": ["zhihuishu.com", "*.zhihuishu.com"],  // suffix allowlist
+    "network": ["example.com", "*.example.com"],
     "browser": false,
     "ai": true,
     "storage": "module"
@@ -65,295 +38,233 @@ Packed as an npm-style `.tgz` (`package/` root) or installed from a directory.
 }
 ```
 
-There is no `files`, `secrets` or `env` permission. A module cannot read the data directory or a
-model key, by construction of the RPC surface in §4.
+- `id` 与 `platform.id` 相同，格式为小写字母开头的 2–32 位字母、数字、下划线或连字符。
+- `runtime.engine` 为 `node` 或 `binary`；入口和额外文件只能是模块目录内的相对路径。
+- 框架版本范围不能为 `*`。当前使用基本语义版本比较器，支持比较运算和 `^`；不要假设完整 npm 范围语法。
+- 网络权限是精确主机或 `*.` 子域规则，不是 URL。根域名与子域规则需要分别声明。
+- `when` 由框架判断，仅支持 `course.kind`、`course.family` 的字符串相等；未知条件拒绝安装。
+- 可选 `keepalive_seconds` 为不小于 60 的整数。宿主定期对已连接用户调用 `auth.keepalive`，模块应仅刷新登录状态，不发学习写入。
 
-`when` predicates are evaluated **by the framework**, never by a module: supported keys are
-`course.kind` and `course.family` with string equality. Unknown keys are a load-time error.
+目录安装仅复制清单、入口和 `runtime.files`。npm 格式 `.tgz` 使用 `package/` 根目录。框架固定声明文件的 sha256，保存至数据库和 `modules.lock.json`，启动时复核内容。
 
----
+Node.js 使用权限模型限制文件、网络和子进程。二进制直接作为可信进程运行，协议权限不是操作系统沙箱；不能据此承诺恶意二进制无法读取主机文件。浏览器脚本同样属于可信模块代码。
 
-## 2. Framing and message shape
+## 消息与生命周期
 
-JSON-RPC 2.0 shaped, with two deliberate deviations:
-
-1. `error.code` is a **stable string**, not an integer (see §6).
-2. Notifications are used for logs and progress only.
-
-```jsonc
-// request  (id is a positive integer, unique per direction)
-{"jsonrpc":"2.0","id":7,"method":"catalog.courses","params":{"session":"s_1b2c"}}
-
-// success
+```json
+{"jsonrpc":"2.0","id":7,"method":"catalog.courses","params":{"session":"s_示例"}}
 {"jsonrpc":"2.0","id":7,"result":{"courses":[]}}
-
-// failure
-{"jsonrpc":"2.0","id":7,"error":{"code":"platform_login_expired","message":"智慧树登录已过期"}}
-
-// notification (no id, no response)
-{"jsonrpc":"2.0","method":"cw.log","params":{"level":"info","message":"loaded 3 courses"}}
+{"jsonrpc":"2.0","id":8,"error":{"code":"platform_login_expired","message":"平台登录已过期"}}
+{"jsonrpc":"2.0","method":"cw.log","params":{"level":"info","message":"已读取课程"}}
 ```
 
-The framework starts the process, then immediately calls `platform.describe`. Any non-protocol
-line on stdout, or a describe that fails or exceeds 5 s, fails the load.
+请求编号为各方向独立的正整数。进程启动后立即握手，`platform.describe` 超时五秒；普通模块调用超时三十秒，连续超时会终止进程。长任务必须分步骤返回检查点，不能在一次调用内等待整段视频或逐题串行完成整张长试卷。
 
----
+运行环境包含必要的 `PATH`、`TZ=UTC`、`CF_MODULE_ID`、`CF_MODULE_SETTINGS`。框架每模块保留一个进程；崩溃后按 1、2、5、15、30 秒退避，达到上限等待管理员重新启用。停止先关闭输入并发 SIGTERM，超时再 SIGKILL。
 
-## 3. Framework → module methods
+## 框架调用模块
 
-All calls have a **30 s wall-clock limit**. The framework kills a process that overruns twice.
+所有认证流量使用宿主签发的不透明 `session`：扫码挑战为 `ch_…`，普通连接为 `s_…`，绑定任务代次的能力句柄为 `j_…`。模块不得解释或自行构造句柄。重新连接后旧句柄失效，任务暂停或停止后旧代次不能访问平台。
 
-`params.session` is always an opaque handle issued by the framework. A module must treat it as a
-string and must not parse it. Handles come in two kinds:
+### 描述与认证
 
-| Kind | Prefix | Issued when | Used for |
-| --- | --- | --- | --- |
-| challenge | `ch_` | `auth.begin` | login traffic; has its own cookie jar |
-| session | `s_` | `auth.complete` | all authenticated traffic |
+| 方法 | 参数 | 结果 |
+| --- | --- | --- |
+| `platform.describe` | `module_api`、`framework_version`、`limits.call_timeout_ms` | `module:{name,version,module_api}` 和与清单一致的 `platform` |
+| `auth.begin` | `method`、`session` | `challenge:{id,kind,image,expires_at}` |
+| `auth.poll` | `challenge`、`session` | `state`：`waiting/scanned/connected/expired/failed` |
+| `auth.complete` | `challenge`、`session` | `display_name`、稳定平台用户标识 `account_raw` |
+| `auth.verify` | `session` | 连接身份信息 |
+| `auth.keepalive` | `session` | 平台自定义的只读保活结果 |
 
-### 3.1 `platform.describe`
+框架根据平台标识和 `account_raw` 生成账号指纹，扫码 Cookie 由框架保存。`account_raw` 是平台用户标识，不是密码、Cookie 或访问令牌。当前网页只提供 `qr` 登录入口。
 
-```jsonc
-// params
-{"module_api": 1, "framework_version": "0.1.0", "limits": {"call_timeout_ms": 30000}}
-// result
-{
-  "module": {"name": "courseflow-zhs", "version": "0.1.0", "module_api": 1},
-  "platform": { /* same shape as manifest.platform, authoritative at runtime */ }
-}
-```
-
-### 3.2 Authentication
-
-```jsonc
-// auth.begin {method:"qr", session:"ch_…"}  -> one of the platform's declared login methods
-{"challenge": {"id": "ch_…", "kind": "qr", "image": "data:image/png;base64,…", "expires_at": 1794000000}}
-
-// auth.poll {challenge:"ch_…", session:"ch_…"}
-{"state": "waiting" | "scanned" | "connected" | "expired" | "failed"}
-
-// auth.complete {challenge:"ch_…", session:"ch_…"}   (call only from "connected")
-{"display_name": "张三", "account_raw": "10001"}
-
-// auth.verify {session:"s_…"}  -> re-check a restored session
-{"display_name": "张三"}
-```
-
-The framework digests `account_raw` into the account key `"<platform_id>/account/<sha256>"`. It is
-the only identity a module learns about a user; it must be stable across logins and must not be an
-email address, a cookie, or a token.
-
-`auth.complete` never returns cookies. The framework persisted the challenge's cookie jar itself,
-so a module cannot exfiltrate credentials even if compromised.
-
-### 3.3 Catalog
+### 课程与学习
 
 ```jsonc
 // catalog.courses {session}
-{"courses": [Course, …]}
-
-// catalog.units {session, course: Course}
-{"units": [Unit, …]}
+{"courses": []}
+// catalog.units {session, course}
+{"units": []}
+// study.step {session, course, unit, checkpoint:null, options:{}}
+{"status":"in_progress","progress":{"watched_seconds":30},"wait_ms":30000,"checkpoint":{}}
+{"status":"completed","evidence":{"platform_confirmed":true},"checkpoint":{}}
+{"status":"needs_ai","questions":[],"reason":"视频弹题需要作答","checkpoint":{}}
+{"status":"needs_human","reason":"需要在官方页面处理验证","checkpoint":{}}
+{"status":"blocked","reason":"尚未开放","checkpoint":{}}
+{"status":"unknown","reason":"保存结果待核对","checkpoint":{}}
 ```
 
-### 3.4 Study
+`checkpoint` 加密落盘后原样传回模块，所有状态都可以返回检查点。`wait_ms` 由宿主限制在六十秒内，等待可取消。模块应先按真实时间等待，再保存进度；任务继续时通过 `options.execution_id` 识别新的执行轮次，不能把暂停时间计入观看时间。
 
-```jsonc
-// study.step {session, course: Course, unit: Unit, checkpoint: <opaque object|null>, options: {}}
-{"status": "in_progress", "progress": {"watched_seconds": 312}, "wait_ms": 15000, "checkpoint": {…}}
-{"status": "completed",   "evidence": {"watched_seconds": 600}}
-{"status": "needs_human", "reason": "interaction_popup" | "captcha" | "unknown_control" | "unit_limit"}
-{"status": "blocked",     "reason": "activity_closed" | "below_pass_line" | "attempts_exhausted"}
-{"status": "unknown",     "reason": "commit_unconfirmed"}
-```
+通用选项包括 `operation:study/trial/review`、`speedup`、`max_speed`、`execution_id`、`limit_seconds`、`review_seconds`、`interaction_answers`。速度默认 1，显式允许时最高 1.5；复习固定 1。真实平台的 `completed` 必须以回读或可核验状态为依据；fixture 可返回明确标记的离线证据。
 
-Rules:
+### 试卷与作答扩展
 
-- A step must not exceed 30 s of wall clock. Longer work is split across steps.
-- `checkpoint` is opaque to the framework; it is sealed at rest and passed back verbatim.
-- `wait_ms` is capped by the framework (60 s) and re-checked against quiet hours.
-- A step must be safe to re-invoke after a framework restart: re-read state before writing.
-- `completed` must carry evidence the framework can record. Readback verification (`catalog.units`
-  later showing `state == "completed"`) is a framework policy, not a module obligation: a fixture
-  source may be unable to reflect progress, so the framework takes the evidence from the step.
+| 方法 | 关键参数 | 结果 |
+| --- | --- | --- |
+| `catalog.papers` | `session,course` | `papers:Paper[]` |
+| `catalog.mastery` | `session,course` | `papers:Paper[]` |
+| `exam.open` | `paper_id,request_id,continuation?` | `ready,cursor?,attempt` |
+| `exam.review` | `paper_id,request_id` | 已提交试卷的只读 `ready,attempt` |
+| `exam.redo` | `paper_id,request_id` | 显式重做后的 `ready,attempt` |
+| `exam.write` | `attempt_id,answers,preserve_ids?,phase,cursor?` | `done,cursor,draft_supported?` |
+| `exam.heartbeat` | `attempt_id,seconds` | `ok` |
+| `exam.readback` | `attempt_id` | `confirmed,attempt_id,score?,graded_answers?,review?` |
 
----
+除特别说明外都携带 `session,course,operation`。`request_id` 固定到任务和轮次，开卷前保存意图；分段读取必须使用同一缓存，`continuation:true` 不得另开作答。`ready:false` 表示还未读齐题目，宿主继续读取，不提前生成或保存答案。
 
-## 4. Module → framework services
+`answers` 为题目编号到字符串数组的映射。`phase` 为 `draft` 或 `submit`。草稿分批执行，每次只发一批并返回游标；`preserve_ids` 排除平台原有作答。掌握度不支持草稿时返回 `draft_supported:false`，仍等待用户确认后提交。
 
-Every service is `cw.`-prefixed and is the module's only way to reach the outside world.
-Calls are synchronous from the module's point of view (request/response with an id).
+宿主在交卷前持久化操作锁。模块不能把 HTTP 应答视为已确认提交；回读必须返回原 `attempt_id`。`graded_answers` 只能包含平台公开或已判为正确的答案。已提交内容不得通过写入式开卷接口读取。
 
-### 4.1 `cw.net.fetch`
+### 课程活动扩展
 
-```jsonc
-// params
+| 方法 | 参数／结果 |
+| --- | --- |
+| `catalog.meetings` | `{session,course}` → `{meetings:[{id,name,replay_available,…}]}` |
+| `catalog.score` | `{session,course}` → `{rules,scores,habit,interactive,qa?}` |
+| `qa.board` | `{session,course,page?,cursor?}` → `{ready,page,posts,cursor?}` |
+| `qa.posts` | `{session,course}` → `{posts}`，仅当前账号及课程 |
+| `activity.step` | `{session,course,operation,item_id,checkpoint,options}` → 与学习步骤相同的状态结构 |
+
+问答模型生成与平台写入分开。`needs_ai` 可返回 `prompt`，宿主生成后把 `generated` 放回活动检查点；生成失败等待人工填写。`ask` 的 `options.texts` 必须是用户检查并选中的草稿。
+
+发布前保存意图，响应未确认或缺少平台记录编号时返回 `unknown`，不能自动重新发送。同课程互助为双方显式开启的可选行为。
+
+## 模块调用宿主
+
+### `cw.net.fetch`
+
+```json
 {
-  "session": "ch_…" | "s_…",
-  "method": "GET" | "POST" | "PUT",
-  "url": "https://passport.zhihuishu.com/qrCodeLogin/getLoginQrImg",
-  "headers": {"Origin": "https://onlineweb.zhihuishu.com"},   // optional
-  "body": <string | object>,                                  // optional
-  "encoding": "raw" | "json" | "form" | "query",              // default "raw"
-  "stage": "read" | "open_study" | "save_study" | "submit",   // default "read"
-  "commit": false                                             // write-ledger commit point
+  "session":"j_示例",
+  "method":"POST",
+  "url":"https://example.com/api",
+  "headers":{"Origin":"https://example.com"},
+  "body":{"key":"value"},
+  "encoding":"json",
+  "stage":"save_study",
+  "commit":true
 }
-// result
-{"status": 200, "headers": {"content-type": "application/json"}, "body": "{…}"}
 ```
 
-The framework:
+结果为 `{status,headers,body}`，`body` 是 UTF-8 字符串。编码支持 `raw/json/form/query`；阶段为 `read/open_study/save_study/submit`，默认 `read`。非只读阶段在夜间拒绝。
 
-- rejects any URL whose host is not in `permissions.network` (`net_blocked`);
-- rejects `open_study` / `save_study` / `submit` during quiet hours (`quiet_hours`);
-- injects cookies from the handle's jar and a bearer token if the session has one;
-- refuses `Cookie`, `Host` and `Content-Length` in `headers` (`net_blocked`);
-- follows at most 8 redirects, staying within the allowlist;
-- maps `401` → `platform_login_expired`, `403/418/429` → `platform_verification_required`;
-- records `commit: true` calls in the write ledger before sending.
+宿主注入对应会话的 Cookie 和令牌，拒绝模块设置 Cookie、Host、Content-Length，限制重定向次数，并在每次跳转前重新检查域名与任务状态。响应最多八 MB。401 映射为登录过期，403／418／429 映射为平台验证。
 
-`body` is always returned as a UTF-8 string. Binary payloads are base64 within the platform's own
-JSON, as 智慧树 does.
+`commit:true` 在发送前写入通用请求台账，记录应答或未知状态；台账本身不等于业务操作的自动去重锁。交卷使用持久化业务锁，问答使用模块发布意图，不能依赖 HTTP 自动重试实现恢复。
 
-### 4.2 `cw.state`
+### `cw.state`
 
 ```jsonc
-// get
-{"namespace": "study", "key": "queue", "session": "s_…"}
-{"value": <any|null>}
-// set  (returns {})
-{"namespace": "study", "key": "queue", "value": <any>, "session": "s_…"}
+// 读取，结果为 {value:任意值或null}
+{"namespace":"study","key":"queue","session":"j_示例"}
+// 写入，结果为 {}
+{"namespace":"study","key":"queue","value":{},"session":"j_示例"}
 ```
 
-Scoped to `(module id, owner, namespace)`, sealed at rest, never readable by another module.
-`cw.state` is the canonical method — the presence of `value` makes it a write; `cw.state.get` and
-`cw.state.set` are accepted aliases with identical parameters.
+作用域为模块、站点用户、命名空间及键，内容加密存储。存在 `value` 表示写入。`cw.state.get` 和 `cw.state.set` 为显式别名。原生平台记录和签名参数放在此处，不泄漏到公共 DTO。
 
-### 4.3 `cw.session.identity`
+### 其他宿主服务
 
-```jsonc
-// params
-{"session": "s_…"}
-// result — the identity the framework stored at auth.complete; never a cookie or token
-{"account_raw": "10001", "display_name": "张三", "connected_at": 1794000000}
-```
+| 服务 | 参数与结果 |
+| --- | --- |
+| `cw.session.identity` | `{session}` → `{account_raw,display_name,connected_at,user_id?}`，不含 Cookie 或令牌 |
+| `cw.clock.now` | `{}` → `{now}`，Unix 秒 |
+| `cw.log` | 通知：`{level,message,fields?}`，不得含凭据 |
+| `cw.ai.generate` | `{session,prompt}` → `{text}`；需要清单 `ai:true`，使用该用户选中的模型 |
+| `cw.browser.open` | `{session,url,purpose?,observe_urls?}` → `{page}`；需要 `browser:true` |
+| `cw.browser.evaluate` | `{session,page,expression,stage}` → JSON 可序列化的脚本结果 |
+| `cw.browser.close` | `{session,page}` → `{}` |
+| `cw.peers.record` | `{session,record}` → `{}`，加密保存已确认的平台发布编号 |
+| `cw.peers.list` | `{session,course_id,recruit_id}` → `{questions:string[]}`，双方开启互助才返回同课程问题编号 |
 
-A module needs a stable platform identity for request fields that the platform expects to match the
-logged-in user. This is the only place it can get one. For a challenge handle the values are empty.
+浏览器页面绑定用户、平台和任务代次。`observe_urls` 可监听少量指定路径的官方响应，只向脚本提供加载或错误状态，不返回完整网络凭据。网页加载和媒体播放通过官方页面执行，模块不得伪造已完成签到。
 
-### 4.4 `cw.clock.now`
+模型请求使用独立 HTTP 调用，不携带平台 Cookie；模型密钥不通过 RPC 或网页回显。题图由宿主当前账号认证代理，公共路径为 `/api/media/<不透明编号>`。
 
-```jsonc
-{"now": 1794000000}   // unix seconds
-```
+## 公共数据类型
 
-### 4.5 `cw.log`
-
-Notification, either direction. `{"level":"debug"|"info"|"warn"|"error","message":"…","fields":{}}`.
-
----
-
-## 5. Data types
-
-All field names are `snake_case` (they are the wire format, not an internal style).
+所有协议业务字段使用 `snake_case`。ID 始终是字符串；课程及班级 ID 不能用斜杠拼接后再拆分。
 
 ```ts
 interface Course {
-  id: string;                 // platform course id
-  recruit_id: string;         // class / recruit id, "0" when the platform has none
+  id: string;
+  recruit_id: string;
   name: string;
-  kind: string;               // "shared" | "smart" | "chapter" | "catalog"
-  kind_label?: string;        // display label, e.g. "共享课"
-  family?: string;            // stable machine taxonomy for framework rules
-  progress?: number | null;   // 0..100
+  kind: string;
+  kind_label?: string;
+  family?: string;
+  progress?: number | null;
   outline_available: boolean;
 }
-
 interface Unit {
   id: string;
   name: string;
   chapter_id: string;
   chapter_name: string;
   lesson_id: string;
-  kind: string;               // "video" | "audio" | "document" | "reading" | "empty"
+  kind: 'video' | 'audio' | 'document' | 'reading' | 'empty';
   duration_seconds?: number | null;
   watched_seconds?: number | null;
-  state: "not_started" | "in_progress" | "completed" | "unknown";
+  state: 'not_started' | 'in_progress' | 'completed' | 'unknown';
   video_id?: string | null;
-  selectable: boolean;        // framework renders selection from this, never infers it
-  selectable_note?: string;   // shown when selectable is false
+  selectable: boolean;
+  selectable_note?: string;
+}
+interface Paper {
+  id: string;
+  name: string;
+  category: string;
+  available: boolean;
+  done: boolean;
+  can_redo?: boolean;
+  can_review?: boolean;
+  reason?: string;
+  score?: number | null;
+  attempts_left?: number | null;
+  ends_at?: number | null;
+}
+interface Question {
+  id: string;
+  kind: 'single' | 'multiple' | 'judge' | 'blank' | 'essay' | 'unsupported';
+  text: string;
+  options: Array<{id: string; text: string}>;
+  answer: string[];
+  correct_answer?: string[];
+  explanation?: string;
+  images?: string[];
+  blanks: number;
+}
+interface Attempt {
+  id: string;
+  paper_id: string;
+  name: string;
+  questions: Question[];
+  expires_at: number | null;
 }
 ```
 
-There is deliberately no `native` field in the wire types. A module that needs to remember
-platform-shaped data puts it in `checkpoint` (per job) or `cw.state` (per user).
+通用宿主可展示更多题型；具体模块仅声明和编码已验证的题型。当前智慧树适配单选、多选和填空，其他题型明确等待官方页面处理，不猜测平台题型编号。公共 DTO 不含 `native` 字段。
 
----
+## 错误与一致性检查
 
-## 6. Error codes
+| 错误码 | 含义 |
+| --- | --- |
+| `unsupported_operation` | 未提供此方法 |
+| `invalid_params` | 参数缺失或格式错误 |
+| `platform_login_expired` | 登录过期 |
+| `platform_verification_required` | 平台要求额外验证 |
+| `platform_protocol_changed` | 响应格式无法识别 |
+| `platform_rejected` | 平台拒绝操作 |
+| `platform_unavailable` | 网络或平台暂不可用 |
+| `no_questions` | 掌握度知识点暂无题目 |
+| `not_found` | 当前账号的资源不存在 |
+| `module_timeout/module_crashed/module_unavailable` | 模块执行异常 |
+| `module_version_changed` | 任务固定的模块版本不再匹配 |
+| `net_blocked/quiet_hours/task_cancelled` | 权限、时间或执行代次拒绝 |
+| `model_required/model_unavailable/model_not_ready/ai_unavailable/answer_format` | 模型配置、连接或答案格式问题 |
+| `browser_unavailable/browser_timeout/browser_closed/browser_page_error` | 官方浏览器不可用或页面异常 |
 
-| Code | Meaning | Framework HTTP mapping |
-| --- | --- | --- |
-| `unsupported_operation` | method not implemented by this module | 501 |
-| `invalid_params` | bad or missing parameters | 400 |
-| `platform_login_expired` | session no longer valid | 409 |
-| `platform_verification_required` | platform wants a challenge solved | 409 |
-| `platform_protocol_changed` | response shape not understood | 502 |
-| `platform_rejected` | platform refused the action | 502 |
-| `platform_unavailable` | network or platform outage | 502 |
-| `not_found` | course / unit / resource missing | 404 |
-
-Framework-generated codes (never sent by a module): `module_timeout`, `module_crashed`,
-`module_unavailable`, `module_version_changed`, `net_blocked`, `quiet_hours`.
-
----
-
-## 7. Lifecycle
-
-1. **Install** — manifest validated, `moduleApi` and `engines.framework` checked, network
-   permissions shown to the admin, files placed under `modules/<id>/<version>/`, sha256 pinned in
-   `modules.lock.json`. A directory install copies only the manifest, `runtime.entry` and
-   `runtime.files` — never a build tree that happens to sit beside them; a `.tgz` install is
-   unpacked as-is. The sha256 covers exactly the declared files, so both paths agree.
-2. **Spawn** — `node` engine: `node --permission --allow-fs-read=<dir> <entry>`; `binary` engine:
-   `<entry>` directly. Working directory is the module directory. Environment is empty except
-   `PATH`, `TZ=UTC`, `CF_MODULE_ID` and `CF_MODULE_SETTINGS` (a JSON object from the module's
-   configuration in `modules.lock.json`, `{}` when unset).
-3. **Handshake** — `platform.describe` within 5 s; the result must match the manifest's
-   `platform.id`, and every declared operation must be dispatchable.
-4. **Calls** — multiplexed; each limited to 30 s.
-5. **Restart** — exponential backoff 1 s → 30 s, max 5 attempts, then `module_unavailable` until
-   an admin re-enables it. In-flight jobs pause, they do not fail.
-6. **Stop** — `SIGTERM`, then `SIGKILL` after 5 s. Piped stdin is closed first.
-
-The framework keeps at most one process per module (a pool may come later without a contract change).
-
----
-
-## 8. Versioning
-
-- `moduleApi` is the integer major gate. The framework supports `N` and `N-1`.
-- Additive changes do not bump `moduleApi`; a module declares the framework range it was built
-  against in `engines.framework`.
-- A breaking change bumps `moduleApi`, ships a migration note, and the previous major is supported
-  for one release cycle.
-- The framework refuses to load a module whose `moduleApi` or engine range does not match, naming
-  both versions in the error.
-
----
-
-## 9. Conformance checklist
-
-A module is v1-conformant when:
-
-- [ ] `platform.describe` answers within 5 s and matches its manifest.
-- [ ] stdout contains only protocol lines; every line parses.
-- [ ] every `id` in a response matches a request the framework sent.
-- [ ] unknown methods return `unsupported_operation`, never a crash.
-- [ ] every declared `login` method and `operations` entry either works or returns a typed error.
-- [ ] no call exceeds 30 s.
-- [ ] `study.step` is safe to re-invoke with the same input.
-- [ ] the process exits on stdin EOF (framework stop) with code 0.
-- [ ] a test pass exists against a mock host (no network, no account).
-
-`courseflow-zhs` implements this checklist and its `tests/` double as the reference.
+模块应验证清单与描述一致、未知方法返回有类型错误、分步调用不超过三十秒、stdin 关闭可退出。至少提供一轮无网络、无真实账号的模拟宿主测试，并单独记录真实账号验收范围。
