@@ -1,0 +1,10 @@
+node_modules/
+*.log
+.DS_Store
+
+# Runtime data must never live in the checkout.
+*.db
+*.db-wal
+*.db-shm
+secret.key
+data/

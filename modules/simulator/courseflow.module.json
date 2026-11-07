@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "sim",
+  "name": "模拟平台",
+  "version": "0.1.0",
+  "moduleApi": 1,
+  "engines": { "framework": ">=0.1.0-0 <0.2.0" },
+  "runtime": { "engine": "node", "entry": "index.mjs" },
+  "platform": {
+    "id": "sim",
+    "name": "模拟平台",
+    "short": "模拟",
+    "login": ["qr"],
+    "operations": ["study"],
+    "unit_kinds": ["video", "document"],
+    "max_speed": 1.5,
+    "presentation": {
+      "tabs": [{ "id": "study", "label": "学习" }, { "id": "qa", "label": "问答区", "when": { "course.kind": "shared" } }],
+      "actions": [{ "id": "trial", "label": "短时试跑", "when": { "course.kind": "shared" } }]
+    }
+  },
+  "permissions": { "network": [], "browser": false, "ai": true, "storage": "module" }
+}
