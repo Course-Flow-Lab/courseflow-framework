@@ -47,10 +47,10 @@ class Cdp {
     });
     return new Cdp(socket);
   }
-  call(method: string, params: any = {}, sessionId?: string): Promise<any> {
+  call(method: string, params: any = {}, sessionId?: string, timeoutMs = 20_000): Promise<any> {
     const id = ++this.next;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(conflict('browser_timeout', '官方页面操作超时，请稍后继续')); }, 20_000);
+      const timer = setTimeout(() => { this.pending.delete(id); reject(conflict('browser_timeout', '官方页面操作超时，请稍后继续')); }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       try { this.socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); }
       catch { clearTimeout(timer); this.pending.delete(id); reject(conflict('browser_closed', '官方浏览器已关闭')); }
@@ -154,13 +154,13 @@ export class BrowserService {
   }
   async evaluate(entry: Live, id: string, expression: string): Promise<unknown> {
     const page = this.require(id, entry);
-    if (expression.length > 100_000) throw badRequest('官方页面脚本过长');
+    if (expression.length > 2_000_000) throw badRequest('官方页面脚本过长');
     const location = await page.cdp.call('Runtime.evaluate', { expression: 'location.href', returnByValue: true }, page.sessionId);
     const url = new URL(location.result?.value || 'about:blank');
     if (url.href === 'about:blank') return { loading: true };
     if (url.protocol !== 'https:' || !allowedHost(page.allow, url.hostname)) throw conflict('platform_login_expired', '官方页面已跳转，请重新连接平台');
     await page.cdp.call('Runtime.evaluate', { expression: `window.__courseflowObserved=${JSON.stringify(page.observed)}` }, page.sessionId);
-    const value = await page.cdp.call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true, timeout: 18_000 }, page.sessionId);
+    const value = await page.cdp.call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true, timeout: 42_000 }, page.sessionId, 45_000);
     if (value.exceptionDetails) throw new AppError(502, 'browser_page_error', '官方页面尚未就绪或操作失败，请稍后继续');
     const result = value.result?.value ?? null;
     if (JSON.stringify(result).length > 4_000_000) throw conflict('browser_page_error', '官方页面返回内容过大');
