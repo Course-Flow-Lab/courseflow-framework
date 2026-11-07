@@ -1,6 +1,6 @@
 # Courseflow 模块 API v1
 
-本文描述框架与独立平台模块之间的实际协议。当前框架 `0.1.1` 仅支持 `moduleApi: 1`。新增可选方法使用框架版本范围控制兼容性，不承诺尚未实现的上一代主版本兼容。
+本文描述框架与独立平台模块之间的实际协议。当前框架 `0.1.2` 仅支持 `moduleApi: 1`。新增可选方法使用框架版本范围控制兼容性，不承诺尚未实现的上一代主版本兼容。
 
 模块是常驻子进程，stdin／stdout 使用 UTF-8、每行一个 JSON 对象的 JSON-RPC 2.0。`error.code` 使用稳定字符串；通知没有 `id`。stdout 只能输出协议，日志写 stderr。模块的网络、状态、模型和浏览器操作经宿主服务调用。
 
@@ -170,9 +170,11 @@ Node.js 使用权限模型限制文件、网络和子进程。二进制直接作
 }
 ```
 
-结果为 `{status,headers,body}`，`body` 是 UTF-8 字符串。编码支持 `raw/json/form/query`；阶段为 `read/open_study/save_study/submit`，默认 `read`。非只读阶段在夜间拒绝。
+结果为 `{status,headers,body}`，`body` 是 UTF-8 字符串。编码支持 `raw/json/form/query`；阶段为 `read/open_study/save_study/submit`，默认 `read`。用户启用夜间暂停时，非只读阶段在北京时间 23:00–07:00 拒绝；关闭后按正常任务权限执行。
 
 宿主注入对应会话的 Cookie 和令牌，拒绝模块设置 Cookie、Host、Content-Length，限制重定向次数，并在每次跳转前重新检查域名与任务状态。响应最多八 MB。401 映射为登录过期，403／418／429 映射为平台验证。
+
+宿主保存 Cookie 的主机作用范围：没有 `Domain` 属性时只匹配原主机，显式 `Domain` 时匹配该域及子域。传入 Chromium 时保留这一区别，域 Cookie 使用前导点；旧会话缺少 `host_only` 字段时沿用原有的域匹配语义。模块不能读取 Cookie 容器。
 
 请求头的值支持 `${cookie:NAME}` 占位符。宿主在发送前用当前会话中匹配目标主机、路径且未过期的 Cookie 值替换；只替换请求头，不处理 URL 和请求体。占位符缺失时返回 `platform_login_expired`。模块因此可以使用由 Cookie 派生的签名或令牌，而仍然拿不到完整 Cookie 罐。
 
@@ -204,6 +206,8 @@ Node.js 使用权限模型限制文件、网络和子进程。二进制直接作
 | `cw.peers.list` | `{session,course_id,recruit_id}` → `{questions:string[]}`，双方开启互助才返回同课程问题编号 |
 
 浏览器页面绑定用户、平台和任务代次。`observe_urls` 可监听少量指定路径的官方响应，只向脚本提供加载或错误状态，不返回完整网络凭据。网页加载和媒体播放通过官方页面执行，模块不得伪造已完成签到。
+
+浏览器非只读执行同样遵守所属用户的夜间暂停设置。`/api/bootstrap` 对已登录用户返回个人 `quiet_hours.enabled/active`；未登录时返回默认策略。偏好接口的 `quiet_hours` 为布尔值，默认 `true`。
 
 模型请求使用独立 HTTP 调用，不携带平台 Cookie；模型密钥不通过 RPC 或网页回显。题图由宿主当前账号认证代理，公共路径为 `/api/media/<不透明编号>`。
 

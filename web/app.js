@@ -1,12 +1,13 @@
 import { createApi, platformPath, coursePath, parseRoute } from './api.js';
 import * as view from './views.js';
 import * as features from './features.js';
+import { captureQa, qaChange } from './qa.js';
 
 const $ = (selector) => document.querySelector(selector);
 const state = {
   me: null, csrf: '', bootstrap: null, platforms: [], modules: [], tasks: [],
   courseLists: {}, courseErrors: {}, course: null, units: [], presentation: null,
-  settings: null, feature: null, selected: new Set(), route: parseRoute(location.hash), loading: false,
+  settings: null, feature: null, qaCourses: {}, selected: new Set(), route: parseRoute(location.hash), loading: false,
   search: '', filter: 'all', taskFilter: 'all', modal: null,
 };
 let routeGeneration = 0;
@@ -50,7 +51,7 @@ function expireSession() {
   routeGeneration += 1;
   clearTimeout(refreshTimer);
   closeModal();
-  Object.assign(state, { me: null, csrf: '', platforms: [], modules: [], tasks: [], courseLists: {}, courseErrors: {}, course: null, units: [], settings: null, feature: null, selected: new Set() });
+  Object.assign(state, { me: null, csrf: '', platforms: [], modules: [], tasks: [], courseLists: {}, courseErrors: {}, course: null, units: [], settings: null, feature: null, qaCourses: {}, selected: new Set() });
   $('#workspace').hidden = true;
   $('#auth').hidden = false;
   $('#auth').innerHTML = view.authView(state.bootstrap);
@@ -138,6 +139,7 @@ async function loadCourses(platforms, force = false) {
 async function loadRoute(force = false) {
   const generation = ++routeGeneration;
   closeModal();
+  captureQa(state);
   state.route = parseRoute(location.hash);
   $('.page-scroll').scrollTop = 0;
   state.course = null;
@@ -321,7 +323,7 @@ async function pollChallenge(pid, handle, generation) {
   }
 }
 
-function featureContext() { return { state, api, openModal, closeModal, renderPage, refreshTasks, showTask, toast }; }
+function featureContext() { return { state, api, openModal, closeModal, renderPage, refreshTasks, showTask, toast, loadRoute }; }
 
 async function showTask(id) {
   const modalVersion = challengeGeneration;
@@ -342,11 +344,13 @@ function renderCourseSearch() {
 }
 
 document.addEventListener('input', (event) => {
+  if (event.target.matches('[data-draft]')) qaChange({ name: 'draft-selected' }, state);
   if (event.target.id === 'course-search') { state.search = event.target.value; renderCourseSearch(); }
 });
 
 document.addEventListener('change', (event) => {
   const target = event.target;
+  if (qaChange(target, state)) return;
   if (!(target instanceof HTMLInputElement)) return;
   if (target.dataset.unit) {
     if (target.checked) state.selected.add(target.dataset.unit); else state.selected.delete(target.dataset.unit);
@@ -364,10 +368,10 @@ document.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (pending.has(form.id)) return;
   pending.add(form.id);
-  const submit = form.querySelector('[type="submit"]');
+  const submit = event.submitter || form.querySelector('[type="submit"]');
   const errorBox = form.querySelector('.form-error');
   errorBox.hidden = true;
-  submit.disabled = true;
+  if (submit) submit.disabled = true;
   const data = Object.fromEntries(new FormData(form));
   try {
     if (features.formIds.includes(form.id)) await features.submit(form, featureContext());
@@ -402,7 +406,7 @@ document.addEventListener('submit', async (event) => {
   } catch (error) {
     errorBox.textContent = error.message;
     errorBox.hidden = false;
-  } finally { submit.disabled = false; pending.delete(form.id); }
+  } finally { if (submit) submit.disabled = false; pending.delete(form.id); }
 });
 
 document.addEventListener('click', async (event) => {
