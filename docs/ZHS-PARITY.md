@@ -28,6 +28,8 @@
 
 ## 自动与页面验证
 
+两个仓库克隆到相邻目录后分别执行（`courseflow-framework` 与 `courseflow-zhs`）：
+
 ```sh
 # courseflow-zhs
 cargo +stable test --locked

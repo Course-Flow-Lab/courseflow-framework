@@ -4,6 +4,8 @@ Courseflow 是基于 Node.js 的课程工作台和平台模块宿主。站点账
 
 界面参考 Courseweave，提供平台侧栏、课程卡片、分章目录、课程功能页、任务详情、底部任务栏、深浅主题和移动导航。Studia 和 Courseweave 仅供开发参考，不是运行依赖。
 
+仓库：[courseflow-framework](https://github.com/Course-Flow-Lab/courseflow-framework)（本仓库）· [courseflow-zhs](https://github.com/Course-Flow-Lab/courseflow-zhs)（智慧树模块）。
+
 ## 运行
 
 需要 Node.js ≥ 24、npm。智慧树的见面课和问答还需要 Chromium；构建智慧树模块需要 Rust ≥ 1.88。
@@ -38,16 +40,21 @@ npm test
 
 ## 安装智慧树模块
 
-先在相邻的 `courseflow-zhs` 仓库构建，再从框架安装：
+模块是独立仓库，需要先取得并构建。默认克隆到框架旁边的 `../courseflow-zhs`；已经有本地检出时跳过第一步即可：
 
 ```sh
-# 在 courseflow-zhs 中执行
-cargo +stable build --release --locked
+# 1. 取得并构建模块（已有检出可跳过 clone）
+git clone https://github.com/Course-Flow-Lab/courseflow-zhs.git ../courseflow-zhs
+(cd ../courseflow-zhs && cargo +stable build --release --locked)
 
-# 在 courseflow-framework 中执行；CF_DATA_DIR 必须与服务一致
+# 2. 在 courseflow-framework 中安装；CF_DATA_DIR 必须与服务一致
 npm run cli -- module add ../courseflow-zhs
 npm run cli -- module config zhs '{"source":"live"}'
 ```
+
+`module add` 接受目录、npm 格式 `.tgz` 或服务器上的任意路径，例如
+`npm run cli -- module add /srv/artifacts/courseflow-zhs-0.3.0.tgz`。目录安装只复制清单、`runtime.entry`
+和 `runtime.files`，不会把 `target/` 带进数据目录。
 
 `live` 是真实平台模式，也是智慧树模块的默认值。仅在单独的离线测试数据目录中使用 `{"source":"fixture"}`。模拟数据不能与真实账号的验收结果混用。
 
