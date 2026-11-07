@@ -13,7 +13,8 @@ export type PlatformSession = {
   session_id: string;
 };
 
-type Live = {
+export type JobScope = { id: string; generation: number };
+export type Live = {
   handle: string;
   owner: string;
   platform: string;
@@ -21,6 +22,8 @@ type Live = {
   cookies: Cookie[];
   token: string;
   expires_at: number;
+  connectionId?: string;
+  job?: JobScope;
 };
 
 const scopeFor = (platform: string): string => `${platform}/session`;
@@ -77,13 +80,20 @@ export class Sessions {
     if (entry.platform !== platform) {
       throw conflict('net_blocked', '模块不能使用其他平台的会话');
     }
+    if (entry.kind === 'session' && entry.connectionId !== this.load(entry.owner, platform)?.session_id) {
+      throw conflict('platform_login_expired', '平台连接已更新，请核对账号后重新继续任务');
+    }
+    if (entry.job) {
+      const task = this.db.get<{ state: string; generation: number }>('SELECT state,generation FROM tasks WHERE id=?1 AND owner=?2', entry.job.id, entry.owner);
+      if (!task || task.state !== 'running' || task.generation !== entry.job.generation) throw conflict('task_cancelled', '任务执行已取消，旧执行器不能继续访问平台');
+    }
     return entry;
   }
 
   /** A live `s_` handle for an already connected account, created on demand after a restart. */
   handleFor(owner: string, platform: string): string | undefined {
     for (const entry of this.live.values()) {
-      if (entry.owner === owner && entry.platform === platform && entry.kind === 'session') {
+      if (entry.owner === owner && entry.platform === platform && entry.kind === 'session' && !entry.job) {
         return entry.handle;
       }
     }
@@ -98,6 +108,7 @@ export class Sessions {
       cookies: stored.cookies,
       token: stored.token,
       expires_at: 0,
+      connectionId: stored.session_id,
     });
     return handle;
   }
@@ -118,7 +129,9 @@ export class Sessions {
       session_id: randomId(),
     };
     this.save(owner, platform, session);
-    this.live.delete(handle);
+    for (const [id, entry] of this.live) {
+      if (entry.owner === owner && entry.platform === platform) this.live.delete(id);
+    }
     this.handleFor(owner, platform);
     return session;
   }
@@ -134,6 +147,24 @@ export class Sessions {
       cookies: entry.cookies,
       token: entry.token,
     });
+    for (const alias of this.live.values()) {
+      if (alias.owner === entry.owner && alias.platform === entry.platform && alias.kind === 'session') { alias.cookies = entry.cookies; alias.token = entry.token; }
+    }
+  }
+
+  jobHandle(owner: string, platform: string, job: JobScope): string {
+    const base = this.handleFor(owner, platform);
+    if (!base) throw conflict('platform_not_connected', '尚未连接平台账号');
+    for (const entry of this.live.values()) {
+      if (entry.owner === owner && entry.platform === platform && entry.job?.id === job.id && entry.job.generation === job.generation) return entry.handle;
+    }
+    const handle = `j_${randomId()}`;
+    this.live.set(handle, { ...this.live.get(base)!, handle, job });
+    return handle;
+  }
+
+  cancelJob(id: string): void {
+    for (const [handle, entry] of this.live) if (entry.job?.id === id) this.live.delete(handle);
   }
 
   load(owner: string, platform: string): PlatformSession | undefined {

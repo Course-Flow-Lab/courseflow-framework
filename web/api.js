@@ -35,11 +35,11 @@ export function parseRoute(hash) {
     if (!parts[0] || parts[0] === 'courses') return { page: 'courses', pid: null };
     if (parts[0] === 'platform' && parts[1]) {
       if (parts[2] === 'course' && parts[3] && parts[4]) {
-        return { page: 'course', pid: parts[1], id: parts[3], rid: parts[4] };
+        return { page: 'course', pid: parts[1], id: parts[3], rid: parts[4], ...(parts[5] ? { tab: parts[5] } : {}) };
       }
       return { page: 'courses', pid: parts[1] };
     }
-    if (['tasks', 'connections', 'modules', 'account'].includes(parts[0])) return { page: parts[0] };
+    if (['tasks', 'connections', 'modules', 'account', 'settings'].includes(parts[0])) return { page: parts[0] };
   } catch { /* A malformed hash is an unknown page, never a broken application. */ }
   return { page: 'not-found' };
 }

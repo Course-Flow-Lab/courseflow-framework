@@ -65,7 +65,7 @@ test(
     ).body;
     assert.equal(units.units.length, 3);
     // 智慧树 declares the Q&A tab only for shared courses; the framework resolves that.
-    assert.deepEqual(units.ui.tabs.map((tab: any) => tab.id), ['qa']);
+    assert.deepEqual(units.ui.tabs.map((tab: any) => tab.id), ['study', 'review', 'answer', 'mastery', 'meeting', 'qa', 'score', 'records']);
     assert.deepEqual(units.ui.actions.map((action: any) => action.id), ['trial']);
     assert.equal(units.units.find((unit: any) => unit.kind === 'document').selectable, false);
 
@@ -81,6 +81,36 @@ test(
     const finished = await waitFor(runtime, session, created.body.task.id, 'completed', 10_000);
     assert.equal(finished.progress, 100);
     assert.deepEqual(finished.completed, [documentUnit.id]);
+
+    // 扩展方法通过真正的 Rust 子进程返回通用 DTO，所有网络均为显式 fixture。
+    const root = `/api/platforms/zhs/courses/${shared.id}/${shared.recruit_id}`;
+    for (const section of ['papers', 'mastery', 'meetings', 'score', 'qa', 'posts']) {
+      const response = await call(runtime, { url: root + '/catalog/' + section, session });
+      assert.equal(response.status, 200, section);
+      assert.ok(!JSON.stringify(response.body).includes('native'));
+    }
+    const createdAnswer = await call(runtime, { method: 'POST', url: root + '/jobs', session, body: { operation: 'answer', item_ids: ['fixture-paper'], options: { use_ai: false } } });
+    assert.equal(createdAnswer.status, 200);
+    const answerId = createdAnswer.body.task.id;
+    await waitFor(runtime, session, answerId, 'paused');
+    assert.equal((await call(runtime, { method: 'POST', url: `/api/tasks/${answerId}/answers`, session, body: { answers: { q1: ['A'] } } })).status, 200);
+    await call(runtime, { method: 'POST', url: `/api/tasks/${answerId}/resume`, session });
+    await waitFor(runtime, session, answerId, 'paused');
+    assert.equal((await call(runtime, { url: `/api/tasks/${answerId}`, session })).body.workflow.phase, 'waiting_submit');
+    await call(runtime, { method: 'POST', url: `/api/tasks/${answerId}/confirm`, session });
+    await waitFor(runtime, session, answerId, 'completed');
+    assert.equal((await call(runtime, { url: `/api/tasks/${answerId}`, session })).body.workflow.records[0].score, 100);
+    for (const operation of ['meeting', 'qa', 'ask']) {
+      const response = await call(runtime, { method: 'POST', url: root + '/jobs', session, body: { operation, ...(operation === 'meeting' ? { item_ids: ['fixture-meeting'] } : {}), options: { texts: ['离线提问，不会发布到真实平台。'] } } });
+      assert.equal(response.status, 200, JSON.stringify(response.body));
+      await waitFor(runtime, session, response.body.task.id, 'completed');
+    }
+    const smart = courses.find((course) => course.kind === 'smart');
+    const smartRoot = `/api/platforms/zhs/courses/${smart.id}/${smart.recruit_id}`;
+    const smartUnits = (await call(runtime, { url: smartRoot + '/units', session })).body.units;
+    assert.equal(smartUnits.find((u: any) => u.kind === 'document').selectable, true);
+    const smartJob = await call(runtime, { method: 'POST', url: smartRoot + '/jobs', session, body: { operation: 'study', item_ids: ['smart-doc'] } });
+    assert.equal(smartJob.status, 200); await waitFor(runtime, session, smartJob.body.task.id, 'completed');
 
     // the framework still cannot read the module's checkpoint
     const row = runtime.db.get<{ checkpoint: Uint8Array | null }>(

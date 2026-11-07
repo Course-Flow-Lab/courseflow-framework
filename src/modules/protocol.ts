@@ -19,6 +19,7 @@ export type PlatformDescriptor = {
   operations: string[];
   unit_kinds: string[];
   max_speed?: number;
+  keepalive_seconds?: number;
   presentation?: { tabs?: PresentationTab[]; actions?: PresentationTab[] };
 };
 
@@ -70,6 +71,10 @@ export type Unit = {
   selectable_note?: string;
 };
 
+export type Question = { id: string; text: string; kind: string; options: Array<{ id: string; text: string }>; answer: string[]; correct_answer?: string[]; explanation?: string; images?: string[]; blanks: number };
+export type Paper = { id: string; name: string; category: string; available: boolean; done: boolean; can_redo?: boolean; can_review?: boolean; reason?: string; score?: number | null; attempts_left?: number | null; ends_at?: number | null };
+export type Attempt = { id: string; paper_id: string; name: string; questions: Question[]; expires_at: number | null };
+
 export type RpcRequest = { jsonrpc: '2.0'; id: number; method: string; params?: unknown };
 export type RpcResponse =
   | { jsonrpc: '2.0'; id: number; result: unknown }
@@ -80,6 +85,7 @@ export type RpcMessage = RpcRequest | RpcResponse | RpcNotification;
 const ID_PATTERN = /^[a-z][a-z0-9_-]{1,31}$/;
 const HOST_PATTERN = /^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 const OPERATIONS = new Set([
+  'trial',
   'study',
   'review',
   'meeting',
@@ -250,6 +256,7 @@ export function validateManifest(raw: unknown): Manifest {
       operations,
       unit_kinds: unitKinds,
       max_speed: typeof platformRaw.max_speed === 'number' ? platformRaw.max_speed : undefined,
+      keepalive_seconds: typeof platformRaw.keepalive_seconds === 'number' && Number.isInteger(platformRaw.keepalive_seconds) && platformRaw.keepalive_seconds >= 60 ? platformRaw.keepalive_seconds : undefined,
       presentation,
     },
     permissions: {

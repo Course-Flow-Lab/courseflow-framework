@@ -24,12 +24,15 @@ export function registerPlatformsRoutes(app: FastifyInstance, context: ServerCon
     '/api/platforms/:pid/login/:id/poll',
     async (request) => {
       const current = requireIdentity(request, { write: true });
-      return manager.loginPoll(current.user.id, request.params.pid, request.params.id);
+      const result = await manager.loginPoll(current.user.id, request.params.pid, request.params.id);
+      if (result.state === 'connected') for (const task of jobs.list(current.user.id)) if (task.platform === request.params.pid && ['queued', 'running'].includes(task.state)) jobs.pause(current.user.id, task.id);
+      return result;
     },
   );
 
   app.post<{ Params: { pid: string } }>('/api/platforms/:pid/disconnect', async (request) => {
     const current = requireIdentity(request, { write: true });
+    for (const task of jobs.list(current.user.id)) if (task.platform === request.params.pid && ['queued', 'running'].includes(task.state)) jobs.pause(current.user.id, task.id);
     await manager.disconnect(current.user.id, request.params.pid);
     return { connected: false };
   });

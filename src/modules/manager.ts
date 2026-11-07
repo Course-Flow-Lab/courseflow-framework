@@ -5,6 +5,10 @@ import { execFileSync } from 'node:child_process';
 import type { Db } from '../core/db.ts';
 import type { Vault } from '../core/vault.ts';
 import type { Sessions } from '../core/sessions.ts';
+import type { JobScope } from '../core/sessions.ts';
+import type { AiService } from '../services/ai.ts';
+import type { BrowserService } from '../services/browser.ts';
+import { preferences } from '../core/preferences.ts';
 import { digest, nowSeconds, quietStatus, randomId } from '../core/domain.ts';
 import { AppError, badRequest, notFound } from '../core/errors.ts';
 import type { Course, DescribeResult, Manifest, PlatformDescriptor, Unit } from './protocol.ts';
@@ -47,6 +51,13 @@ export class ModuleManager {
   private starting = new Map<string, Promise<ModuleRunner>>();
   private restartAttempts = new Map<string, number>();
   private restartTimers = new Map<string, NodeJS.Timeout>();
+  private ai?: AiService;
+  private browser?: BrowserService;
+  private hostOperations = new Set<Promise<unknown>>();
+  private maintenanceTimer: NodeJS.Timeout;
+  private maintaining?: Promise<void>;
+  private maintained = new Map<string, number>();
+  private jobSignals = new Map<string, AbortController>();
 
   constructor(options: {
     db: Db;
@@ -54,12 +65,18 @@ export class ModuleManager {
     sessions: Sessions;
     modulesDir: string;
     log: Logger;
+    ai?: AiService;
+    browser?: BrowserService;
   }) {
     this.db = options.db;
     this.vault = options.vault;
     this.sessions = options.sessions;
     this.modulesDir = options.modulesDir;
     this.log = options.log;
+    this.ai = options.ai;
+    this.browser = options.browser;
+    this.maintenanceTimer = setInterval(() => { if (!this.maintaining) this.maintaining = this.maintain().finally(() => { this.maintaining = undefined; }); }, 60_000);
+    this.maintenanceTimer.unref();
   }
 
   // ---------------------------------------------------------------- installation
@@ -218,7 +235,12 @@ export class ModuleManager {
       manifest,
       dir: path.join(this.modulesDir, id, row.version),
       settings: JSON.parse(row.settings) as Record<string, unknown>,
-      callHost: (method, params) => this.hostCall(id, method, params),
+      callHost: (method, params) => {
+        const operation = this.hostCall(id, method, params);
+        this.hostOperations.add(operation);
+        void operation.then(() => this.hostOperations.delete(operation), () => this.hostOperations.delete(operation));
+        return operation;
+      },
       log: (level, message) => this.log(level, `[${id}] ${message}`),
       onExit: (exited) => this.onRunnerExit(exited),
     });
@@ -286,10 +308,29 @@ export class ModuleManager {
     }
   }
 
+  private async maintain(): Promise<void> {
+    const rows = this.db.all<{ owner: string; scope: string }>("SELECT owner,scope FROM secrets WHERE scope LIKE '%/session'");
+    for (const row of rows) {
+      const platform = row.scope.slice(0, -8);
+      const module = this.db.get<ModuleRow>('SELECT * FROM modules WHERE id=?1 AND enabled=1', platform);
+      if (!module) continue;
+      const interval = (JSON.parse(module.manifest) as Manifest).platform.keepalive_seconds;
+      const key = `${row.owner}/${platform}`;
+      if (!interval || nowSeconds() - (this.maintained.get(key) ?? 0) < interval) continue;
+      this.maintained.set(key, nowSeconds());
+      try { await this.invoke(row.owner, platform, 'auth.keepalive', {}); }
+      catch { this.log('warn', `平台 ${platform} 登录保活失败，可在平台连接中重新扫码`); }
+    }
+  }
+
   async stopAll(): Promise<void> {
+    clearInterval(this.maintenanceTimer);
+    await this.maintaining;
+    for (const controller of this.jobSignals.values()) controller.abort();
     for (const timer of this.restartTimers.values()) clearTimeout(timer);
     this.restartTimers.clear();
     await Promise.all([...this.runners.keys()].map((id) => this.stopRunner(id)));
+    await Promise.allSettled([...this.hostOperations]);
   }
 
   // ---------------------------------------------------------------- platform operations
@@ -411,8 +452,10 @@ export class ModuleManager {
     unit: Unit,
     checkpoint: unknown,
     options: Record<string, unknown>,
+    job?: JobScope,
   ): Promise<Record<string, unknown>> {
-    const handle = this.requireSession(owner, platform);
+    const handle = job ? this.sessions.jobHandle(owner, platform, job) : this.requireSession(owner, platform);
+    if (job && !this.jobSignals.has(job.id)) this.jobSignals.set(job.id, new AbortController());
     return (await this.call(platform, 'study.step', {
       session: handle,
       course,
@@ -424,6 +467,45 @@ export class ModuleManager {
 
   presentation(platform: PlatformDescriptor, course: Course) {
     return resolvePresentation(platform, course);
+  }
+
+  accountKey(owner: string, platform: string): string | undefined { return this.sessions.accountKey(owner, platform); }
+  connectionId(owner: string, platform: string): string | undefined { return this.sessions.load(owner, platform)?.session_id; }
+  moduleVersion(platform: string): string { return this.requireRow(platform).version; }
+  async invoke(owner: string, platform: string, method: string, params: Record<string, unknown>, job?: JobScope): Promise<any> {
+    const session = job ? this.sessions.jobHandle(owner, platform, job) : this.requireSession(owner, platform);
+    if (job && !this.jobSignals.has(job.id)) this.jobSignals.set(job.id, new AbortController());
+    return this.call(platform, method, { ...params, session });
+  }
+  cancelJob(id: string): void {
+    this.jobSignals.get(id)?.abort(); this.jobSignals.delete(id); this.sessions.cancelJob(id);
+    void this.browser?.cancelJob(id);
+  }
+  async image(owner: string, platform: string, url: string): Promise<{ mime: string; data: string }> {
+    if (url.startsWith('/api/media/')) {
+      const id = url.slice('/api/media/'.length);
+      const asset = this.db.get<{ sealed: Uint8Array }>('SELECT sealed FROM media_assets WHERE id=?1 AND owner=?2 AND platform=?3', id, owner, platform);
+      if (!asset) throw notFound('找不到题目图片');
+      url = this.vault.openJson<string>(owner, `media/${id}`, Buffer.from(asset.sealed));
+    }
+    const handle = this.requireSession(owner, platform);
+    const session = this.sessions.resolveFetch(handle, platform);
+    const manifest = JSON.parse(this.requireRow(platform).manifest) as Manifest;
+    const response = await performFetch({ method: 'GET', url, headers: {}, body: null }, { allow: manifest.permissions.network, cookies: session.cookies, token: session.token, now: nowSeconds(), binary: true });
+    const mime = response.headers['content-type']?.split(';')[0] ?? '';
+    if (response.status !== 200 || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(mime)) throw new AppError(502, 'image_unavailable', '题目图片暂时无法读取');
+    return { mime, data: response.body };
+  }
+  registerImage(owner: string, platform: string, source: string): string {
+    const id = digest(JSON.stringify([owner, platform, source]));
+    const sealed = this.vault.sealJson(owner, `media/${id}`, source);
+    this.db.run('INSERT OR IGNORE INTO media_assets VALUES(?1,?2,?3,?4)', id, owner, platform, new Uint8Array(sealed));
+    return `/api/media/${id}`;
+  }
+  async readImage(owner: string, id: string) {
+    const row = this.db.get<{ platform: string }>('SELECT platform FROM media_assets WHERE id=?1 AND owner=?2', id, owner);
+    if (!row) throw notFound('找不到自己的题目图片');
+    return this.image(owner, row.platform, `/api/media/${id}`);
   }
 
   private requireSession(owner: string, platform: string): string {
@@ -453,6 +535,39 @@ export class ModuleManager {
         return this.hostFetch(moduleId, params);
       case 'cw.session.identity':
         return this.sessionIdentity(moduleId, params);
+      case 'cw.ai.generate': {
+        const entry = this.sessions.resolveFetch(this.requireSessionParam(params), moduleId);
+        const manifest = JSON.parse(this.requireRow(moduleId).manifest) as Manifest;
+        if (!manifest.permissions.ai || !this.ai) throw new AppError(403, 'permission_denied', '模块未声明模型权限');
+        return { text: await this.ai.generate(entry.owner, String(params.prompt ?? ''), { signal: AbortSignal.timeout(25_000) }) };
+      }
+      case 'cw.browser.open':
+      case 'cw.browser.evaluate':
+      case 'cw.browser.close': {
+        const session = this.requireSessionParam(params);
+        const entry = this.sessions.resolveFetch(session, moduleId);
+        const manifest = JSON.parse(this.requireRow(moduleId).manifest) as Manifest;
+        if (!manifest.permissions.browser || !this.browser) throw new AppError(403, 'permission_denied', '模块未声明官方浏览器权限');
+        if (params.stage !== undefined && params.stage !== 'read' && quietStatus(nowSeconds()).active) throw new AppError(409, 'quiet_hours', '夜间暂停期间不执行页面写入');
+        if (method === 'cw.browser.open') return this.browser.open(entry, manifest.permissions.network, params, () => { this.sessions.resolveFetch(session, moduleId); });
+        if (method === 'cw.browser.evaluate') return this.browser.evaluate(entry, String(params.page ?? ''), String(params.expression ?? ''));
+        await this.browser.closeOwned(entry, String(params.page ?? '')); return {};
+      }
+      case 'cw.peers.record': {
+        const entry = this.sessions.resolveFetch(this.requireSessionParam(params), moduleId);
+        const record = params.record as Record<string, unknown>;
+        if (!record || !['question', 'answer'].includes(String(record.kind)) || typeof record.platform_id !== 'string') throw badRequest('发布记录无效');
+        const id = digest(JSON.stringify([entry.owner, moduleId, record.course_id, record.recruit_id, record.platform_id]));
+        const sealed = this.vault.sealJson(entry.owner, `qa/${id}`, record);
+        this.db.run('INSERT OR IGNORE INTO qa_posts VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)', id, entry.owner, moduleId, String(record.course_id), String(record.recruit_id), String(record.question_id ?? ''), String(record.kind), record.platform_id, new Uint8Array(sealed), nowSeconds());
+        return {};
+      }
+      case 'cw.peers.list': {
+        const entry = this.sessions.resolveFetch(this.requireSessionParam(params), moduleId);
+        if (!preferences(this.db, entry.owner).qa_peers) return { questions: [] };
+        const rows = this.db.all<{ platform_id: string }>(`SELECT q.platform_id FROM qa_posts q JOIN preferences p ON p.owner=q.owner WHERE q.owner!=?1 AND q.platform=?2 AND q.course_id=?3 AND q.recruit_id=?4 AND q.kind='question' AND json_extract(p.value,'$.qa_peers')=1 ORDER BY q.created_at DESC LIMIT 100`, entry.owner, moduleId, String(params.course_id), String(params.recruit_id));
+        return { questions: rows.map((r) => r.platform_id) };
+      }
       // `cw.state` is the canonical method (spec §4.2): the presence of `value` selects a write.
       // `cw.state.get` / `cw.state.set` are accepted as explicit aliases.
       case 'cw.state':
@@ -531,6 +646,11 @@ export class ModuleManager {
           cookies: entry.cookies,
           token: entry.token,
           now: nowSeconds(),
+          signal: entry.job ? this.jobSignals.get(entry.job.id)?.signal : undefined,
+          beforeRequest: () => {
+            this.sessions.resolveFetch(session, moduleId);
+            if (stage !== 'read' && quietStatus(nowSeconds()).active) throw new AppError(409, 'quiet_hours', '夜间暂停期间不执行平台写入');
+          },
         },
       );
     } catch (error) {
@@ -563,10 +683,13 @@ export class ModuleManager {
     const entry = this.sessions.resolveFetch(session, moduleId);
     const stored = this.sessions.load(entry.owner, entry.platform);
     if (!stored) return { account_raw: '', display_name: '', connected_at: null };
+    let userId = '';
+    try { const raw = stored.cookies.find((c) => c.name === 'CASLOGC')?.value; if (raw) userId = String(JSON.parse(decodeURIComponent(raw)).userId ?? ''); } catch { /* 其他平台不需要此身份字段。 */ }
     return {
       account_raw: stored.account_raw,
       display_name: stored.display_name,
       connected_at: stored.connected_at,
+      user_id: userId,
     };
   }
 

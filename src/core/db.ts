@@ -79,6 +79,18 @@ CREATE TABLE IF NOT EXISTS task_events (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS task_events_task ON task_events(task_id, id);
+CREATE TABLE IF NOT EXISTS preferences (owner TEXT PRIMARY KEY REFERENCES users(id), value TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS ai_models (
+ id TEXT PRIMARY KEY, owner TEXT NOT NULL REFERENCES users(id), name TEXT NOT NULL, base_url TEXT NOT NULL,
+ model TEXT NOT NULL, api_format TEXT NOT NULL, key_sealed BLOB NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+ shared INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS task_inputs (task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE, sealed BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS task_order (task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE, position INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS operation_locks (id TEXT PRIMARY KEY, owner TEXT NOT NULL, platform TEXT NOT NULL, task_id TEXT NOT NULL, state TEXT NOT NULL, created_at INTEGER NOT NULL, resource TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS answer_memory (id TEXT PRIMARY KEY, owner TEXT NOT NULL, platform TEXT NOT NULL, course_key TEXT NOT NULL, sealed BLOB NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS qa_posts (id TEXT PRIMARY KEY, owner TEXT NOT NULL, platform TEXT NOT NULL, course_id TEXT NOT NULL, recruit_id TEXT NOT NULL, question_id TEXT NOT NULL, kind TEXT NOT NULL, platform_id TEXT NOT NULL, sealed BLOB NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS media_assets (id TEXT PRIMARY KEY, owner TEXT NOT NULL, platform TEXT NOT NULL, sealed BLOB NOT NULL);
 `;
 
 export type SqlValue = string | number | bigint | null | Uint8Array;
@@ -93,7 +105,8 @@ export class Db {
     this.raw.exec('PRAGMA busy_timeout = 5000;');
     this.raw.exec(SCHEMA);
     const version = this.raw.prepare('PRAGMA user_version').get() as { user_version: number };
-    if (version.user_version === 0) this.raw.exec('PRAGMA user_version = 1');
+    if (version.user_version > 2) throw new Error('数据库由较新版本创建，请使用对应版本的框架');
+    if (version.user_version < 2) this.raw.exec('PRAGMA user_version = 2');
   }
 
   run(sql: string, ...params: SqlValue[]): { changes: number } {
