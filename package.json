@@ -24,5 +24,8 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0"
+  },
+  "allowScripts": {
+    "argon2@0.45.2": true
   }
 }
