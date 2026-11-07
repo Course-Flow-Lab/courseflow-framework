@@ -1,4 +1,4 @@
-import { badRequest } from '../errors.ts';
+import { badRequest } from '../core/errors.ts';
 
 export const MODULE_API = 1;
 export const CALL_TIMEOUT_MS = 30_000;
