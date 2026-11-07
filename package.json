@@ -1,6 +1,6 @@
 {
   "name": "courseflow-framework",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "基于 Node.js 的课程工作台与平台模块宿主",

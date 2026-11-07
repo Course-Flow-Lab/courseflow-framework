@@ -8,8 +8,8 @@ import type { Sessions } from '../core/sessions.ts';
 import type { JobScope } from '../core/sessions.ts';
 import type { AiService } from '../services/ai.ts';
 import type { BrowserService } from '../services/browser.ts';
-import { preferences } from '../core/preferences.ts';
-import { digest, nowSeconds, quietStatus, randomId } from '../core/domain.ts';
+import { preferences, quietFor } from '../core/preferences.ts';
+import { digest, nowSeconds, randomId } from '../core/domain.ts';
 import { AppError, badRequest, notFound } from '../core/errors.ts';
 import type { Course, DescribeResult, Manifest, PlatformDescriptor, Unit } from './protocol.ts';
 import { resolvePresentation, satisfiesRange, validateManifest } from './protocol.ts';
@@ -568,7 +568,7 @@ export class ModuleManager {
         const entry = this.sessions.resolveFetch(session, moduleId);
         const manifest = JSON.parse(this.requireRow(moduleId).manifest) as Manifest;
         if (!manifest.permissions.browser || !this.browser) throw new AppError(403, 'permission_denied', '模块未声明官方浏览器权限');
-        if (params.stage !== undefined && params.stage !== 'read' && quietStatus(nowSeconds()).active) throw new AppError(409, 'quiet_hours', '夜间暂停期间不执行页面写入');
+        if (params.stage !== undefined && params.stage !== 'read' && quietFor(this.db, entry.owner).active) throw new AppError(409, 'quiet_hours', '夜间暂停期间不执行页面写入');
         if (method === 'cw.browser.open') return this.browser.open(entry, manifest.permissions.network, params, () => { this.sessions.resolveFetch(session, moduleId); });
         if (method === 'cw.browser.evaluate') return this.browser.evaluate(entry, String(params.page ?? ''), String(params.expression ?? ''));
         await this.browser.closeOwned(entry, String(params.page ?? '')); return {};
@@ -615,7 +615,7 @@ export class ModuleManager {
     const manifest = JSON.parse(row.manifest) as Manifest;
 
     const stage = typeof params.stage === 'string' ? params.stage : 'read';
-    if (stage !== 'read' && quietStatus(nowSeconds()).active) {
+    if (stage !== 'read' && quietFor(this.db, entry.owner).active) {
       throw new AppError(409, 'quiet_hours', '夜间暂停期间不执行会改变平台状态的学习请求');
     }
 
@@ -669,7 +669,7 @@ export class ModuleManager {
           signal: entry.job ? this.jobSignals.get(entry.job.id)?.signal : undefined,
           beforeRequest: () => {
             this.sessions.resolveFetch(session, moduleId);
-            if (stage !== 'read' && quietStatus(nowSeconds()).active) throw new AppError(409, 'quiet_hours', '夜间暂停期间不执行平台写入');
+            if (stage !== 'read' && quietFor(this.db, entry.owner).active) throw new AppError(409, 'quiet_hours', '夜间暂停期间不执行平台写入');
           },
         },
       );

@@ -15,6 +15,7 @@ export type Cookie = {
   path: string;
   secure: boolean;
   http_only: boolean;
+  host_only?: boolean;
   expires_at?: number | null;
 };
 
@@ -38,6 +39,10 @@ function domainMatches(cookieDomain: string, host: string): boolean {
   return target === domain || target.endsWith(`.${domain}`);
 }
 
+function cookieMatchesHost(cookie: Cookie, host: string): boolean {
+  return cookie.host_only === true ? cookie.domain.replace(/^\./, '').toLowerCase() === host.toLowerCase() : domainMatches(cookie.domain, host);
+}
+
 function pathMatches(cookiePath: string, requestPath: string): boolean {
   if (requestPath === cookiePath) return true;
   const prefix = cookiePath.endsWith('/') ? cookiePath : `${cookiePath}/`;
@@ -50,7 +55,7 @@ export function cookieHeaderFor(jar: Cookie[], url: URL, now: number): string {
   for (const cookie of jar) {
     if (cookie.expires_at && cookie.expires_at > 0 && cookie.expires_at <= now) continue;
     if (cookie.secure && url.protocol !== 'https:') continue;
-    if (!domainMatches(cookie.domain, url.hostname)) continue;
+    if (!cookieMatchesHost(cookie, url.hostname)) continue;
     if (!pathMatches(cookie.path || '/', path)) continue;
     pairs.push(`${cookie.name}=${cookie.value}`);
   }
@@ -69,12 +74,13 @@ export function parseSetCookie(header: string, url: URL): Cookie | undefined {
     path: '/',
     secure: false,
     http_only: false,
+    host_only: true,
   };
   for (const attribute of attributes) {
     const index = attribute.indexOf('=');
     const key = (index < 0 ? attribute : attribute.slice(0, index)).trim().toLowerCase();
     const value = index < 0 ? '' : attribute.slice(index + 1).trim();
-    if (key === 'domain' && value) cookie.domain = value.replace(/^\./, '');
+    if (key === 'domain' && value) { cookie.domain = value.replace(/^\./, '').toLowerCase(); cookie.host_only = false; }
     else if (key === 'path' && value) cookie.path = value;
     else if (key === 'secure') cookie.secure = true;
     else if (key === 'httponly') cookie.http_only = true;
@@ -147,7 +153,7 @@ export function resolveHeaderCookies(
           item.name === cookieName &&
           (!item.expires_at || item.expires_at <= 0 || item.expires_at > now) &&
           (!item.secure || url.protocol === 'https:') &&
-          domainMatches(item.domain, url.hostname) &&
+          cookieMatchesHost(item, url.hostname) &&
           pathMatches(item.path || '/', path),
       );
       if (!cookie) {

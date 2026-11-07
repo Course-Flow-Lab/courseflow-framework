@@ -27,7 +27,7 @@ export function setQuietOverride(until: number | null): void {
 }
 
 /** Fixed UTC+8, pause from 23:00 (inclusive) to 07:00 (exclusive). Host timezone independent. */
-export function quietStatus(now: number): {
+export function quietStatus(now: number, enabled = true): {
   enabled: boolean;
   active: boolean;
   timezone: string;
@@ -43,8 +43,8 @@ export function quietStatus(now: number): {
   else if (second < 23 * 3600) boundary = day + 23 * 3600;
   else boundary = day + 86400 + 7 * 3600;
   return {
-    enabled: true,
-    active:
+    enabled,
+    active: enabled &&
       !(second >= 7 * 3600 && second < 23 * 3600) &&
       !(quietOverrideUntil !== null && now < quietOverrideUntil),
     timezone: 'Asia/Shanghai (UTC+8)',

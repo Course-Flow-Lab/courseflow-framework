@@ -2,9 +2,9 @@ import type { Db } from '../core/db.ts';
 import type { Vault } from '../core/vault.ts';
 import type { ModuleManager } from '../modules/manager.ts';
 import type { Course, Unit, Question } from '../modules/protocol.ts';
-import { nowSeconds, quietStatus, randomId, sleep } from '../core/domain.ts';
+import { nowSeconds, randomId, sleep } from '../core/domain.ts';
 import { badRequest, conflict, notFound } from '../core/errors.ts';
-import { preferences } from '../core/preferences.ts';
+import { preferences, quietFor } from '../core/preferences.ts';
 import type { AiService } from '../services/ai.ts';
 import { AnswerMemory, validAnswer, ANSWER_SYSTEM, questionPrompt, parseModelAnswer } from '../services/answers.ts';
 import { runWorkflow, type WorkflowContext } from './workflows.ts';
@@ -153,7 +153,7 @@ export class JobEngine {
   }
 
   confirm(owner: string, id: string): TaskView {
-    if (quietStatus(nowSeconds()).active) throw conflict('quiet_hours', '夜间暂停期间不能交卷');
+    if (quietFor(this.db, owner).active) throw conflict('quiet_hours', '夜间暂停期间不能交卷');
     const row = this.db.get<TaskRow>('SELECT * FROM tasks WHERE id=?1 AND owner=?2', id, owner);
     if (!row) throw notFound('找不到这个任务');
     const cp = this.loadCheckpoint(row);
@@ -228,16 +228,15 @@ export class JobEngine {
   private schedule(): void {
     if (this.stopping) return;
     try {
-      const quiet = quietStatus(nowSeconds()).active;
-      if (quiet) {
-        for (const row of this.db.all<TaskRow>("SELECT * FROM tasks WHERE state IN ('queued','running')")) {
-          this.update(row.id, { state: 'paused', detail: '夜间暂停，将在 07:00 自动继续' });
-          this.db.run('UPDATE tasks SET generation=generation+1 WHERE id=?1', row.id);
-          this.controllers.get(row.id)?.abort(); this.manager.cancelJob(row.id); this.event(row.id, 'paused', '夜间暂停');
-        }
-        return;
+      for (const row of this.db.all<TaskRow>("SELECT * FROM tasks WHERE state IN ('queued','running')")) {
+        if (!quietFor(this.db, row.owner).active) continue;
+        this.update(row.id, { state: 'paused', detail: '夜间暂停，将在 07:00 自动继续' });
+        this.db.run('UPDATE tasks SET generation=generation+1 WHERE id=?1', row.id);
+        this.controllers.get(row.id)?.abort(); this.manager.cancelJob(row.id); this.event(row.id, 'paused', '夜间暂停');
       }
-      for (const row of this.db.all<TaskRow>("SELECT * FROM tasks WHERE state='paused' AND detail='夜间暂停，将在 07:00 自动继续'")) this.resume(row.owner, row.id);
+      for (const row of this.db.all<TaskRow>("SELECT * FROM tasks WHERE state='paused' AND detail='夜间暂停，将在 07:00 自动继续'")) {
+        if (!quietFor(this.db, row.owner).active) this.resume(row.owner, row.id);
+      }
       const queued = this.db.all<TaskRow>("SELECT t.* FROM tasks t LEFT JOIN task_order o ON o.task_id=t.id WHERE t.state='queued' ORDER BY coalesce(o.position,t.created_at)");
       for (const row of queued) if (!this.executions.has(row.id)) this.launch(row.id);
     } catch (error) { this.log('warn', `任务调度暂时失败：${(error as Error).message}`); }
@@ -284,7 +283,7 @@ export class JobEngine {
     const account = this.manager.accountKey(owner, input.platform);
     const connection = this.manager.connectionId(owner, input.platform);
     if (!account || !connection) throw conflict('platform_not_connected', '请先连接平台账号');
-    if (quietStatus(nowSeconds()).active) {
+    if (quietFor(this.db, owner).active) {
       throw conflict('quiet_hours', '夜间暂停期间不能新建任务');
     }
     const id = randomId();
@@ -351,7 +350,7 @@ export class JobEngine {
     const row = this.db.get<TaskRow>('SELECT * FROM tasks WHERE id = ?1 AND owner = ?2', id, owner);
     if (!row) throw notFound('找不到这个任务');
     if (row.state !== 'paused') throw conflict('invalid_state', '只有已暂停的任务可以继续');
-    if (quietStatus(nowSeconds()).active) throw conflict('quiet_hours', '夜间暂停期间不能继续任务');
+    if (quietFor(this.db, owner).active) throw conflict('quiet_hours', '夜间暂停期间不能继续任务');
     this.db.run(
       "UPDATE tasks SET state = 'queued', generation = generation + 1, detail = '等待继续', updated_at = ?1 WHERE id = ?2",
       nowSeconds(),
@@ -479,7 +478,7 @@ export class JobEngine {
         while (steps < STEP_CAP) {
           if (controller.signal.aborted) return;
           if (!this.stillRunning(taskId, generation)) return;
-          if (quietStatus(nowSeconds()).active) {
+          if (quietFor(this.db, current.owner).active) {
             this.update(taskId, { state: 'paused', detail: '夜间暂停，将在 07:00 自动继续' });
             this.event(taskId, 'paused', '夜间暂停');
             return;

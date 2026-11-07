@@ -4,7 +4,18 @@ import path from 'node:path';
 import { randomId } from '../core/domain.ts';
 import { AppError, badRequest, conflict, notFound } from '../core/errors.ts';
 import type { Live } from '../core/sessions.ts';
-import { allowedHost } from '../modules/net.ts';
+import { allowedHost, type Cookie } from '../modules/net.ts';
+
+/** CDP 用前导点表示域 Cookie。旧数据未记录 host_only，沿用宿主原有的域匹配语义。 */
+export function browserCookies(jar: Cookie[], allow: string[], now = Math.floor(Date.now() / 1000)) {
+  return jar.filter((cookie) => allowedHost(allow, cookie.domain.replace(/^\./, '')) &&
+    (!cookie.expires_at || cookie.expires_at <= 0 || cookie.expires_at > now)).map((cookie) => ({
+      name: cookie.name, value: cookie.value,
+      domain: (cookie.host_only === true ? '' : '.') + cookie.domain.replace(/^\./, ''),
+      path: cookie.path || '/', secure: cookie.secure, httpOnly: cookie.http_only,
+      ...(cookie.expires_at && cookie.expires_at > 0 ? { expires: cookie.expires_at } : {}),
+    }));
+}
 
 type Event = { method: string; params: any; sessionId?: string };
 class Cdp {
@@ -105,7 +116,7 @@ export class BrowserService {
       await cdp.call('Page.enable', {}, sessionId);
       await cdp.call('Network.enable', {}, sessionId);
       await cdp.call('Runtime.enable', {}, sessionId);
-      const cookies = entry.cookies.filter((c) => allowedHost(allow, c.domain.replace(/^\./, ''))).map((c) => ({ name: c.name, value: c.value, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.http_only, ...(c.expires_at ? { expires: c.expires_at } : {}) }));
+      const cookies = browserCookies(entry.cookies, allow);
       if (cookies.length) await cdp.call('Network.setCookies', { cookies }, sessionId);
       const page: Page = { id: randomId(), owner: entry.owner, platform: entry.platform, connectionId: entry.connectionId, jobId: entry.job?.id, generation: entry.job?.generation, child, cdp, sessionId, profile, allow, touched: Date.now(), observed: {}, pendingObserved: new Map() };
       this.pages.set(page.id, page);
@@ -138,7 +149,7 @@ export class BrowserService {
       try { parsed = JSON.parse(body); } catch { page.observed[pending.path] = { error: '平台观看记录响应无法解析' }; return; }
       const code = String(parsed.status ?? parsed.code ?? '');
       const error = pending.status >= 400 || parsed.success === false || !['', '0', '200'].includes(code);
-      page.observed[pending.path] = { loaded: !error, ...(error ? { error: ['401', '403'].includes(code) ? '平台登录已过期' : '平台观看记录读取或保存失败，请核对验证提示' } : {}) };
+      page.observed[pending.path] = { loaded: !error, ...(error ? { code: ['401', '403'].includes(code) || [401, 403].includes(pending.status) ? 'platform_login_expired' : 'platform_verification_required', error: ['401', '403'].includes(code) || [401, 403].includes(pending.status) ? '平台登录已过期' : '平台观看记录读取或保存失败，请核对验证提示' } : {}) };
     }
   }
   async evaluate(entry: Live, id: string, expression: string): Promise<unknown> {

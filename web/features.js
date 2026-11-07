@@ -1,3 +1,4 @@
+import { qaView, loadQa, qaAction, submitDraft, captureQa, qaSummary } from './qa.js';
 import { coursePath } from './api.js';
 import { esc, icon, empty, modalFrame, taskDetailView, dateText, stateLabel } from './views.js';
 
@@ -20,19 +21,11 @@ export async function load(state, api, current) {
   if (state.route.page === 'settings') { const result = await api('/api/settings'); if (current()) state.settings = result; return; }
   if (state.route.page !== 'course' || !state.course) return;
   const tab = state.route.tab || 'study';
+  if (tab === 'qa') return loadQa(state, api, current);
   state.feature = { tab, data: null, drafts: [], error: '' };
-  const sections = { answer: 'papers', mastery: 'mastery', meeting: 'meetings', score: 'score', qa: 'qa' };
+  const sections = { answer: 'papers', mastery: 'mastery', meeting: 'meetings', score: 'score' };
   if (!sections[tab]) return;
-  const root = coursePath(state.route.pid, state.course);
-  let data = await api(root + '/catalog/' + sections[tab]);
-  if (tab === 'qa') {
-    for (let retry = 0; data.ready === false && retry < 35 && current(); retry++) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      if (!current()) return;
-      data = await api(root + '/catalog/qa?page=' + encodeURIComponent(data.page || ''));
-    }
-    const posts = await api(root + '/catalog/posts'); data.own_posts = posts.posts;
-  }
+  const data = await api(coursePath(state.route.pid, state.course) + '/catalog/' + sections[tab]);
   if (current()) state.feature.data = data;
 }
 
@@ -54,6 +47,7 @@ export function courseContent(state) {
     const videos = state.units.filter((u) => u.kind === 'video' && u.state === 'completed');
     return `<section class="panel feature-panel"><div class="section-heading"><div><h2>每日复习</h2><p class="muted">按日期轮换已完成视频，使用原速累计复习时长。原课程完成状态会保留。</p></div>${run('review', '开始复习')}</div>${videos.map((u) => `<label class="choice-row"><input name="feature-item" type="checkbox" value="${esc(u.id)}" checked><span>${esc(u.name)}</span><small class="muted">已完成</small></label>`).join('') || empty('还没有可复习的视频', '先完成课程学习后，再回来复习。')}</section>`;
   }
+  if (tab === 'qa') return qaView(state);
   const data = f.data;
   if (!data) return `<div class="banner">${f.error ? esc(f.error) : '尚未读取到平台数据，请刷新重试。'}</div>`;
   if (tab === 'answer' || tab === 'mastery') {
@@ -61,17 +55,13 @@ export function courseContent(state) {
   }
   if (tab === 'meeting') return `<section class="panel feature-panel"><div class="section-heading"><div><h2>见面课回放签到</h2><p class="muted">通过官方播放器按原速播放，加载观看历史后续播，并以平台签到状态确认结果。</p></div>${run('meeting', '处理所选见面课')}</div>${(data.meetings || []).map((m) => `<label class="choice-row"><input name="feature-item" type="checkbox" value="${esc(m.id)}"${m.replay_available ? ' checked' : ''}><span><strong>${esc(m.name)}</strong><small class="muted">${m.replay_available ? '有回放' : '暂无可用回放，执行时会记录原因'}</small></span></label>`).join('') || empty('暂无见面课', '平台还没有提供见面课记录。')}</section>`;
   if (tab === 'score') return `<div class="section-heading"><div><h2>平台成绩分析</h2><p class="muted">以下为当前账号的平台返回值，未提供的项目不会估算。</p></div>${downloadLinks(root + '/scores/export', [['json', '导出 JSON'], ['csv', '导出 CSV']])}</div><div class="feature-grid">${[['计分规则', data.rules], ['已获成绩', data.scores], ['学习习惯', data.habit], ['课程互动', { 分数: data.interactive, 问答统计: data.qa }]].map(([name, value]) => `<section class="panel feature-panel"><h2>${esc(name)}</h2>${dataFields(value)}</section>`).join('')}</div>`;
-  if (tab === 'qa') return `<div class="feature-grid qa-grid"><section class="panel feature-panel"><div class="section-heading"><div><h2>课程讨论</h2><p class="muted">回答会发布到平台。默认筛选未回答的问题，避免重复发送。</p></div>${run('qa', '回答课程问题')}</div>${data.ready === false ? '<div class="banner">官方问答区尚未就绪，请重新扫码连接后刷新。</div>' : ''}${(data.posts || []).map((p) => `<article class="discussion"><p>${esc(p.content)}</p><small class="muted">${esc(p.chapter || '课程讨论')} · ${esc(p.answers ?? 0)} 条回答${p.mine ? ' · 我的提问' : ''}</small></article>`).join('') || '<p class="muted">这一页暂无问题。</p>'}${button('下一页', 'qa-next', `data-cursor="${esc(Number(data.cursor || 0) + 1)}"`)}</section><section class="panel feature-panel"><h2>起草课程提问</h2><p class="muted">草稿可以手工填写或由模型生成。检查并勾选后，再点击发布。</p><form id="draft-form"><label>补充主题<textarea name="topic" rows="2" maxlength="3000" placeholder="可选：章节或想讨论的概念"></textarea></label>${numberField('count', '生成数量', 3, 1, 10)}${errorBox}<button type="submit" class="button">生成草稿</button></form><div id="question-drafts">${draftFields(f.drafts?.length ? f.drafts : [''])}</div><div class="actions">${button('添加手工草稿', 'add-draft')}${run('ask', '发布已选提问')}</div><h3 class="section-title">本课程已发布记录</h3>${(data.own_posts || []).map((p) => `<article class="discussion"><span class="tag">${p.kind === 'question' ? '提问' : '回答'}</span><p>${esc(p.content)}</p><small class="muted">${p.created_at ? dateText(p.created_at) : ''} · ${esc(p.platform_id || '')}</small></article>`).join('') || '<p class="muted">暂无本工作台的发布记录。</p>'}</section></div>`;
   return '';
-}
-function draftFields(drafts) {
-  return drafts.map((text, i) => `<div class="draft-row"><label class="check-label"><input type="checkbox" name="draft-selected" value="${i}"${text ? ' checked' : ''}>提问 ${i + 1}</label><textarea data-draft="${i}" rows="3" minlength="10" maxlength="1000" aria-label="提问草稿 ${i + 1}">${esc(text)}</textarea></div>`).join('');
 }
 
 export function settingsView(state) {
   if (state.loading || !state.settings) return '<div class="loading-state"><span class="spinner"></span>正在读取设置…</div>';
   const { preferences: p, models, browser } = state.settings;
-  return `<header class="page-heading"><div><div class="eyebrow">工作台偏好</div><h1>模型与任务设置</h1><p class="muted">密钥加密保存，可选择个人模型或管理员提供的共享模型。</p></div>${button('添加模型', 'model-add', '', true)}</header><div class="feature-grid"><section class="panel feature-panel"><h2>任务偏好</h2><form id="preferences-form"><label>默认模型<select name="model_id"><option value="">暂不使用模型，手动补答</option>${models.map((m) => `<option value="${esc(m.id)}"${p.model_id === m.id ? ' selected' : ''}${!m.enabled ? ' disabled' : ''}>${esc(m.name)}${m.shared ? ' · 共享' : ''}${!m.enabled ? ' · 已停用' : ''}</option>`).join('')}</select></label>${numberField('concurrency', '最多同时执行的任务', p.concurrency, 1, 8)}${numberField('review_minutes', '每日复习分钟数', p.review_minutes, 1, 60)}${toggle('parallel_study', '允许同一账号跨课程并行学习', p.parallel_study)}${toggle('speedup', '课程学习使用最高 1.5 倍速', p.speedup)}${toggle('qa_peers', '允许与同课程的其他工作台成员互助问答', p.qa_peers)}<p class="muted">互助仅在双方开启时共享已发布问题的编号。同一课程的任务始终排队；作答、交卷和问答保持账号串行。</p>${errorBox}<button class="button primary" type="submit">保存偏好</button></form><div class="banner">官方浏览器：${browser.available ? 'Chromium 可用' : '尚未找到 Chromium，见面课和问答暂不可用'}。北京时间 23:00–07:00 自动暂停，早上继续夜间暂停的任务。</div></section><section class="panel feature-panel"><h2>可用模型</h2>${models.map((m) => `<article class="model-card"><div class="section-heading"><div><h3>${esc(m.name)}</h3><small class="muted">${esc(m.model)} · ${m.shared ? '共享模型' : '个人模型'}</small></div><span class="badge${m.enabled ? ' state-completed' : ''}">${m.enabled ? '已启用' : '已停用'}</span></div><p class="model-url">${esc(m.base_url)}</p><small class="muted">${({ auto: '待检查接口格式', chat_completions: 'Chat Completions', responses: 'Responses' })[m.api_format]}</small><div class="actions">${button('连接检查', 'model-probe', `data-id="${esc(m.id)}"${!m.enabled ? ' disabled' : ''}`)}${m.owned ? `${button('编辑', 'model-edit', `data-id="${esc(m.id)}"`)}${button(m.enabled ? '停用' : '启用', 'model-toggle', `data-id="${esc(m.id)}"`)}${button('删除', 'model-delete', `data-id="${esc(m.id)}"`)}` : ''}</div></article>`).join('') || empty('还没有模型配置', '可添加兼容 Chat Completions 或 Responses 的服务，也可以手动补答。')}</section></div>`;
+  return `<header class="page-heading"><div><div class="eyebrow">工作台偏好</div><h1>模型与任务设置</h1><p class="muted">密钥加密保存，可选择个人模型或管理员提供的共享模型。</p></div>${button('添加模型', 'model-add', '', true)}</header><div class="feature-grid"><section class="panel feature-panel"><h2>任务偏好</h2><form id="preferences-form"><label>默认模型<select name="model_id"><option value="">暂不使用模型，手动补答</option>${models.map((m) => `<option value="${esc(m.id)}"${p.model_id === m.id ? ' selected' : ''}${!m.enabled ? ' disabled' : ''}>${esc(m.name)}${m.shared ? ' · 共享' : ''}${!m.enabled ? ' · 已停用' : ''}</option>`).join('')}</select></label>${numberField('concurrency', '最多同时执行的任务', p.concurrency, 1, 8)}${numberField('review_minutes', '每日复习分钟数', p.review_minutes, 1, 60)}${toggle('quiet_hours', '启用夜间暂停（北京时间 23:00–07:00）', p.quiet_hours !== false)}${toggle('parallel_study', '允许同一账号跨课程并行学习', p.parallel_study)}${toggle('speedup', '课程学习使用最高 1.5 倍速', p.speedup)}${toggle('qa_peers', '允许与同课程的其他工作台成员互助问答', p.qa_peers)}<p class="muted">互助仅在双方开启时共享已发布问题的编号。同一课程的任务始终排队；作答、交卷和问答保持账号串行。</p>${errorBox}<button class="button primary" type="submit">保存偏好</button></form><div class="banner">官方浏览器：${browser.available ? 'Chromium 可用' : '尚未找到 Chromium，见面课和问答暂不可用'}。${p.quiet_hours !== false ? '北京时间 23:00–07:00 自动暂停，早上继续夜间暂停的任务。' : '已关闭夜间暂停，你的任务可以全天运行。'}</div></section><section class="panel feature-panel"><h2>可用模型</h2>${models.map((m) => `<article class="model-card"><div class="section-heading"><div><h3>${esc(m.name)}</h3><small class="muted">${esc(m.model)} · ${m.shared ? '共享模型' : '个人模型'}</small></div><span class="badge${m.enabled ? ' state-completed' : ''}">${m.enabled ? '已启用' : '已停用'}</span></div><p class="model-url">${esc(m.base_url)}</p><small class="muted">${({ auto: '待检查接口格式', chat_completions: 'Chat Completions', responses: 'Responses' })[m.api_format]}</small><div class="actions">${button('连接检查', 'model-probe', `data-id="${esc(m.id)}"${!m.enabled ? ' disabled' : ''}`)}${m.owned ? `${button('编辑', 'model-edit', `data-id="${esc(m.id)}"`)}${button(m.enabled ? '停用' : '启用', 'model-toggle', `data-id="${esc(m.id)}"`)}${button('删除', 'model-delete', `data-id="${esc(m.id)}"`)}` : ''}</div></article>`).join('') || empty('还没有模型配置', '可添加兼容 Chat Completions 或 Responses 的服务，也可以手动补答。')}</section></div>`;
 }
 function modelForm(state, model = {}) {
   return modalFrame(model.id ? '编辑模型' : '添加模型', `<form id="model-form" data-id="${esc(model.id || '')}"><label>显示名称<input name="name" maxlength="100" required value="${esc(model.name || '')}" placeholder="例如：我的课程助手"></label><label>模型服务地址<input name="base_url" type="url" required value="${esc(model.base_url || '')}" placeholder="https://服务地址/v1"></label><label>模型标识<input name="model" maxlength="200" required value="${esc(model.model || '')}" placeholder="填写服务商提供的模型名称"></label><label>API Key<input name="api_key" type="password" autocomplete="new-password"${model.id ? '' : ' required'} placeholder="${model.id ? '留空保留原密钥' : '只在保存时提交，不会回显'}"></label><label>接口格式<select name="api_format">${[['auto', '自动检测（保存后运行连接检查）'], ['chat_completions', 'Chat Completions'], ['responses', 'Responses']].map(([id, name]) => `<option value="${id}"${(model.api_format || 'auto') === id ? ' selected' : ''}>${name}</option>`).join('')}</select></label>${toggle('enabled', '启用此模型', model.enabled !== false)}${state.me.user.role === 'admin' ? toggle('shared', '向工作台所有成员共享此模型', model.shared) : ''}<p class="muted">连接检查会向所填服务发送一次简短请求，可能消耗少量额度。</p>${formFooter('保存模型')}</form>`);
@@ -79,6 +69,7 @@ function modelForm(state, model = {}) {
 
 export async function openJob(operation, ctx) {
   const { state, api, openModal } = ctx;
+  if (state.route.tab === 'qa') captureQa(state);
   state.settings = await api('/api/settings');
   const p = state.settings.preferences;
   let ids = operation === 'study' || operation === 'trial' ? [...state.selected] : [...document.querySelectorAll('[name="feature-item"]:checked')].map((i) => i.value);
@@ -87,7 +78,7 @@ export async function openJob(operation, ctx) {
   const texts = operation === 'ask' ? [...document.querySelectorAll('[name="draft-selected"]:checked')].map((i) => document.querySelector(`[data-draft="${Number(i.value)}"]`).value.trim()) : [];
   if (operation === 'ask' && (!texts.length || texts.some((t) => t.length < 10 || t.length > 1000))) throw new Error('请选择长度为 10–1000 字的提问草稿。');
   const writing = ['answer', 'mastery'].includes(operation);
-  const body = `<form id="job-form"><p>课程：<strong>${esc(state.course.name)}</strong></p><p class="muted">${operation === 'ask' ? `将发布 ${texts.length} 个已选提问，请确认正文。` : operation === 'qa' ? '会将生成的回答发布到平台课程讨论区。' : `已选择 ${ids.length} 个项目。`}</p>${writing || operation === 'qa' ? `<label>使用模型<select name="model_id"><option value="">${writing ? '手动补答' : '请先选择模型，或在任务暂停后手工填写'}</option>${state.settings.models.filter((m) => m.enabled).map((m) => `<option value="${esc(m.id)}"${p.model_id === m.id ? ' selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>` : ''}${writing ? `${toggle('auto_submit', '答案生成后自动提交（未勾选时先等待我确认）')}${toggle('redo', '明确重做所选试卷（仅平台允许时可用）')}<p class="muted">已有答案会保留。只有在任务详情明确允许覆盖后才修改已有作答。掌握度最多处理三轮，未达到满分会保留说明。</p>` : ''}${operation === 'study' ? toggle('speedup', '允许最高 1.5 倍速', p.speedup) : ''}${operation === 'trial' ? numberField('trial_seconds', '试跑秒数', 60, 30, 180) : ''}${operation === 'review' ? numberField('review_minutes', '本次复习分钟数', p.review_minutes, 1, 60) : ''}${operation === 'qa' ? `${numberField('limit', '最多回答数量', 3, 1, 20)}${numberField('max_answers', '仅处理回答数不超过', 0, 0, 100)}` : ''}${operation === 'ask' ? texts.map((t) => `<blockquote>${esc(t)}</blockquote>`).join('') : ''}${formFooter(operation === 'ask' ? '确认发布提问' : operation === 'qa' ? '确认开始发布回答' : '创建任务')}</form>`;
+  const body = `<form id="job-form"><p>课程：<strong>${esc(state.course.name)}</strong></p><p class="muted">${operation === 'ask' ? `将发布 ${texts.length} 个已选提问，请确认正文。` : operation === 'qa' ? '会将生成的回答发布到平台课程讨论区。' : `已选择 ${ids.length} 个项目。`}</p>${writing || operation === 'qa' ? `<label>使用模型<select name="model_id"><option value="">${writing ? '手动补答' : '请先选择模型，或在任务暂停后手工填写'}</option>${state.settings.models.filter((m) => m.enabled).map((m) => `<option value="${esc(m.id)}"${p.model_id === m.id ? ' selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>` : ''}${writing ? `${toggle('auto_submit', '答案生成后自动提交（未勾选时先等待我确认）')}${toggle('redo', '明确重做所选试卷（仅平台允许时可用）')}<p class="muted">已有答案会保留。只有在任务详情明确允许覆盖后才修改已有作答。掌握度最多处理三轮，未达到满分会保留说明。</p>` : ''}${operation === 'study' ? toggle('speedup', '允许最高 1.5 倍速', p.speedup) : ''}${operation === 'trial' ? numberField('trial_seconds', '试跑秒数', 60, 30, 180) : ''}${operation === 'review' ? numberField('review_minutes', '本次复习分钟数', p.review_minutes, 1, 60) : ''}${operation === 'qa' ? `${numberField('limit', '最多回答数量', Math.min(state.feature?.counts?.answer || 5, qaSummary(state.feature.data).room.answer || 1), 1, Math.max(1, qaSummary(state.feature.data).room.answer))}${numberField('max_answers', '仅处理回答数不超过', 0, 0, 100)}` : ''}${operation === 'ask' ? texts.map((t) => `<blockquote>${esc(t)}</blockquote>`).join('') : ''}${formFooter(operation === 'ask' ? '确认发布提问' : operation === 'qa' ? '确认开始发布回答' : '创建任务')}</form>`;
   openModal('job', modalFrame(operationNames[operation], body), { operation, ids, texts });
 }
 
@@ -125,6 +116,7 @@ export function taskDetail(result, quiet) {
 
 export async function action(target, ctx) {
   const { state, api, openModal, closeModal, renderPage, refreshTasks, showTask, toast } = ctx;
+  if (await qaAction(target, ctx)) return true;
   const action = target.dataset.action, id = target.dataset.id;
   if (action === 'study' || action === 'feature-job') { await openJob(action === 'study' ? 'study' : target.dataset.operation, ctx); return true; }
   if (action?.startsWith('model-')) {
@@ -148,14 +140,6 @@ export async function action(target, ctx) {
     if (!r.ready) throw new Error('试卷尚未完整读取，请稍后重试。');
     openModal('review', modalFrame('已提交试卷 · 只读', downloadLinks(root + '/export', [['md', 'Markdown'], ['docx', 'Word'], ['json', 'JSON'], ['csv', 'CSV']]) + questionsView({ attempt: r.attempt }, false), true)); return true;
   }
-  if (action === 'add-draft') {
-    state.feature.drafts = [...document.querySelectorAll('[data-draft]')].map((i) => i.value); state.feature.drafts.push('');
-    document.querySelector('#question-drafts').innerHTML = draftFields(state.feature.drafts); return true;
-  }
-  if (action === 'qa-next') {
-    const r = await api(coursePath(state.route.pid, state.course) + '/catalog/qa?page=' + encodeURIComponent(state.feature.data.page || '') + '&cursor=' + target.dataset.cursor);
-    state.feature.data = { ...r, own_posts: state.feature.data.own_posts }; renderPage(); return true;
-  }
   return false;
 }
 
@@ -163,8 +147,8 @@ export async function submit(form, ctx) {
   const { state, api, closeModal, renderPage, refreshTasks, showTask, toast } = ctx;
   const data = Object.fromEntries(new FormData(form));
   if (form.id === 'preferences-form') {
-    await api('/api/settings/preferences', { method: 'POST', body: { model_id: data.model_id || null, concurrency: Number(data.concurrency), review_minutes: Number(data.review_minutes), parallel_study: data.parallel_study === 'on', speedup: data.speedup === 'on', qa_peers: data.qa_peers === 'on' } });
-    state.settings = await api('/api/settings'); renderPage(); toast('任务偏好已保存。');
+    await api('/api/settings/preferences', { method: 'POST', body: { model_id: data.model_id || null, concurrency: Number(data.concurrency), review_minutes: Number(data.review_minutes), parallel_study: data.parallel_study === 'on', speedup: data.speedup === 'on', qa_peers: data.qa_peers === 'on', quiet_hours: data.quiet_hours === 'on' } });
+    state.settings = await api('/api/settings'); state.bootstrap = await api('/api/bootstrap'); renderPage(); toast('任务偏好已保存。');
   } else if (form.id === 'model-form') {
     await api('/api/settings/models' + (form.dataset.id ? '/' + encodeURIComponent(form.dataset.id) : ''), { method: 'POST', body: { ...data, enabled: data.enabled === 'on', shared: data.shared === 'on' } });
     closeModal(); state.settings = await api('/api/settings'); renderPage(); toast('模型已保存，可以运行连接检查。');
@@ -188,9 +172,6 @@ export async function submit(form, ctx) {
     await api('/api/tasks/' + encodeURIComponent(form.dataset.id) + '/answers', { method: 'POST', body });
     await api('/api/tasks/' + encodeURIComponent(form.dataset.id) + '/resume', { method: 'POST' });
     await refreshTasks(); await showTask(form.dataset.id);
-  } else if (form.id === 'draft-form') {
-    const r = await api(coursePath(state.route.pid, state.course) + '/drafts', { method: 'POST', body: { topic: data.topic, count: Number(data.count) } });
-    state.feature.drafts = r.drafts; document.querySelector('#question-drafts').innerHTML = draftFields(r.drafts); toast('草稿已生成，请检查并选择要发布的提问。');
-  }
+  } else if (form.id === 'draft-form') await submitDraft(form, ctx);
 }
 export const formIds = ['preferences-form', 'model-form', 'job-form', 'answers-form', 'draft-form'];

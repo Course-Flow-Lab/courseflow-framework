@@ -12,7 +12,7 @@ test('web assets are served independently of cwd without exposing source or runt
   assert.match(html.body, /id="sidebar-nav"/);
   assert.match(String(html.headers['content-security-policy']), /style-src 'self'/);
   assert.ok(!String(html.headers['content-security-policy']).includes('unsafe-inline'));
-  for (const file of ['/app.js', '/api.js', '/views.js', '/features.js', '/style.css']) {
+  for (const file of ['/app.js', '/api.js', '/views.js', '/features.js', '/qa.js', '/style.css']) {
     const response = await runtime.app.inject(file);
     assert.equal(response.statusCode, 200, file);
     assert.equal(response.headers['x-content-type-options'], 'nosniff');

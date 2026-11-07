@@ -2,7 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import type { ServerContext } from '../context.ts';
 import type { Course, Paper } from '../../modules/protocol.ts';
 import { AppError, badRequest, notFound } from '../../core/errors.ts';
-import { quietStatus, nowSeconds, randomId } from '../../core/domain.ts';
+import { nowSeconds, randomId } from '../../core/domain.ts';
+import { quietFor } from '../../core/preferences.ts';
 import { csv, exportReport } from '../../services/exports.ts';
 type CourseParams = { pid: string; id: string; rid: string };
 type JobBody = { operation?: string; unit_ids?: string[]; item_ids?: string[]; options?: Record<string, unknown> };
@@ -56,7 +57,7 @@ export function registerFeaturesRoutes(app: FastifyInstance, c: ServerContext): 
   });
   app.post<{ Params: CourseParams; Body: { count?: number; topic?: string; model_id?: string } }>(root + '/drafts', async (request) => {
     const who = requireIdentity(request, { write: true }); const found = await course(who.user.id, request.params);
-    if (quietStatus(nowSeconds()).active) throw new AppError(409, 'quiet_hours', '夜间暂停期间不生成新的任务草稿');
+    if (quietFor(c.db, who.user.id).active) throw new AppError(409, 'quiet_hours', '夜间暂停期间不生成新的任务草稿');
     const count = request.body?.count ?? 3; const topic = request.body?.topic ?? '';
     if (!Number.isInteger(count) || count < 1 || count > 10 || typeof topic !== 'string' || topic.length > 3000) throw badRequest('草稿数量为 1–10，补充主题不超过 3000 字');
     const units = await c.manager.units(who.user.id, request.params.pid, found);
