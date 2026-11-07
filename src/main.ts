@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { loadConfig, bindAddress } from './core/config.ts';
+import { configureProxy } from './core/network.ts';
 import { createRuntime, VERSION } from './runtime.ts';
 
 const HELP = `Courseflow framework ${VERSION}
@@ -24,6 +25,7 @@ const HELP = `Courseflow framework ${VERSION}
 首次启动会在终端打印一次性管理员设置码。运行数据必须放在源码目录之外。`;
 
 async function main(): Promise<void> {
+  configureProxy();
   const argv = process.argv.slice(2);
   const command = argv[0] ?? 'serve';
   if (command === '--help' || command === '-h' || command === 'help') {

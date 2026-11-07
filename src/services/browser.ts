@@ -5,6 +5,18 @@ import { randomId } from '../core/domain.ts';
 import { AppError, badRequest, conflict, notFound } from '../core/errors.ts';
 import type { Live } from '../core/sessions.ts';
 import { allowedHost, type Cookie } from '../modules/net.ts';
+import { proxyUrl } from '../core/network.ts';
+
+function chromeProxyArgument(): string[] {
+  const value = proxyUrl();
+  if (!value) return [];
+  try {
+    const url = new URL(value);
+    return [`--proxy-server=${url.protocol}//${url.host}`];
+  } catch {
+    return [];
+  }
+}
 
 /** CDP 用前导点表示域 Cookie。旧数据未记录 host_only，沿用宿主原有的域匹配语义。 */
 export function browserCookies(jar: Cookie[], allow: string[], now = Math.floor(Date.now() / 1000)) {
@@ -95,7 +107,7 @@ export class BrowserService {
     if (target.protocol !== 'https:' || !allowedHost(allow, target.hostname) || target.username || target.password) throw badRequest('官方页面超出模块网络权限');
     if (this.pages.size >= 4) throw conflict('browser_limit', '官方浏览器页面已达到并发上限，请稍后继续');
     const profile = fs.mkdtempSync(path.join(this.directory, 'page-'));
-    const child = spawn(this.executable, ['--headless=new', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--disable-background-networking', '--disable-dev-shm-usage', '--autoplay-policy=no-user-gesture-required', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawn(this.executable, ['--headless=new', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--disable-background-networking', '--disable-dev-shm-usage', '--autoplay-policy=no-user-gesture-required', ...chromeProxyArgument(), 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
     let cdp: Cdp | undefined;
     try {
       const socketUrl = await new Promise<string>((resolve, reject) => {
@@ -152,8 +164,52 @@ export class BrowserService {
       page.observed[pending.path] = { loaded: !error, ...(error ? { code: ['401', '403'].includes(code) || [401, 403].includes(pending.status) ? 'platform_login_expired' : 'platform_verification_required', error: ['401', '403'].includes(code) || [401, 403].includes(pending.status) ? '平台登录已过期' : '平台观看记录读取或保存失败，请核对验证提示' } : {}) };
     }
   }
-  async evaluate(entry: Live, id: string, expression: string): Promise<unknown> {
+  /** Real pointer input for React Flow / drag-only widgets. */
+  async mouse(entry: Live, id: string, action: Record<string, unknown>): Promise<unknown> {
     const page = this.require(id, entry);
+    const coordinate = (value: unknown, name: string): number => {
+      const number = Number(value);
+      if (!Number.isFinite(number) || Math.abs(number) > 20_000) throw badRequest(`鼠标坐标 ${name} 无效`);
+      return number;
+    };
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const dispatch = (type: string, x: number, y: number, extra: Record<string, unknown> = {}) =>
+      page.cdp.call('Input.dispatchMouseEvent', { type, x, y, ...extra }, page.sessionId);
+    const type = String(action.type ?? '');
+    if (type === 'click') {
+      const x = coordinate(action.x, 'x');
+      const y = coordinate(action.y, 'y');
+      await dispatch('mousePressed', x, y, { button: 'left', clickCount: 1 });
+      await dispatch('mouseReleased', x, y, { button: 'left', clickCount: 1 });
+      return { ok: true };
+    }
+    if (type === 'drag') {
+      const from = action.from as Record<string, unknown> | undefined;
+      const to = action.to as Record<string, unknown> | undefined;
+      if (!from || !to) throw badRequest('拖拽需要 from/to 坐标');
+      const startX = coordinate(from.x, 'from.x');
+      const startY = coordinate(from.y, 'from.y');
+      const endX = coordinate(to.x, 'to.x');
+      const endY = coordinate(to.y, 'to.y');
+      await dispatch('mouseMoved', startX, startY);
+      await dispatch('mousePressed', startX, startY, { button: 'left', clickCount: 1 });
+      await sleep(60);
+      const steps = Math.max(2, Math.min(30, Number(action.steps ?? 12) || 12));
+      for (let step = 1; step <= steps; step += 1) {
+        const x = startX + ((endX - startX) * step) / steps;
+        const y = startY + ((endY - startY) * step) / steps;
+        await dispatch('mouseMoved', x, y);
+        await sleep(8);
+      }
+      await sleep(80);
+      await dispatch('mouseReleased', endX, endY, { button: 'left', clickCount: 1 });
+      await sleep(200);
+      return { ok: true };
+    }
+    throw badRequest('不支持的鼠标操作');
+  }
+
+  async evaluate(entry: Live, id: string, expression: string): Promise<unknown> {    const page = this.require(id, entry);
     if (expression.length > 2_000_000) throw badRequest('官方页面脚本过长');
     const location = await page.cdp.call('Runtime.evaluate', { expression: 'location.href', returnByValue: true }, page.sessionId);
     const url = new URL(location.result?.value || 'about:blank');

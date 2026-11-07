@@ -19,7 +19,8 @@
   },
   "dependencies": {
     "argon2": "^0.45.2",
-    "fastify": "^5.12.0"
+    "fastify": "^5.12.0",
+    "undici": "^8.12.4"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
