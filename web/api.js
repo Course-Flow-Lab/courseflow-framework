@@ -1,16 +1,18 @@
 export function createApi(getCsrf, onUnauthorized = () => {}) {
   return async function api(path, options = {}) {
+    const { download, ...requestOptions } = options;
     const headers = { ...options.headers };
     if (options.body !== undefined) headers['content-type'] = 'application/json';
     if (options.method && options.method !== 'GET' && getCsrf()) {
       headers['x-courseflow-csrf'] = getCsrf();
     }
     const response = await fetch(path, {
-      ...options,
+      ...requestOptions,
       credentials: 'same-origin',
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
+    if (download && response.ok) return { blob: await response.blob(), filename: /filename="([\w.-]+)"/.exec(response.headers.get('content-disposition') || '')?.[1] || 'courseflow.log' };
     const data = await response.json();
     if (!response.ok) {
       const error = new Error(data?.error?.message || `请求失败（${response.status}）`);
@@ -39,7 +41,7 @@ export function parseRoute(hash) {
       }
       return { page: 'courses', pid: parts[1] };
     }
-    if (['tasks', 'connections', 'modules', 'account', 'settings'].includes(parts[0])) return { page: parts[0] };
+    if (['tasks', 'connections', 'modules', 'account', 'settings', 'logs'].includes(parts[0])) return { page: parts[0] };
   } catch { /* A malformed hash is an unknown page, never a broken application. */ }
   return { page: 'not-found' };
 }

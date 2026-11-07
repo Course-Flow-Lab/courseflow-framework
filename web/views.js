@@ -17,6 +17,7 @@ const paths = {
   search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>',
   close: '<path d="m6 6 12 12M6 18 18 6"/>',
+  download: '<path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/>',
 };
 export const icon = (name) => `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.book}</svg>`;
 export const activeTasks = (tasks) => tasks.filter((t) => ['queued', 'running', 'paused'].includes(t.state));
@@ -44,7 +45,7 @@ export function navigation(state) {
   const link = (href, text, symbol, active, count = '') => `<a class="nav-item${active ? ' active' : ''}" href="${href}"${active ? ' aria-current="page"' : ''}>${icon(symbol)}<span>${esc(text)}</span>${count !== '' ? `<span class="nav-count">${count}</span>` : ''}</a>`;
   return `<div class="nav-group">${link('#/courses', '所有课程', 'grid', route.page === 'courses' && !route.pid)}${link('#/tasks', '任务中心', 'tasks', route.page === 'tasks', activeTasks(state.tasks).length || '')}</div>
     <div class="nav-label">课程平台<span>${state.platforms.length}</span></div><div class="nav-group platform-nav">${state.platforms.map((p) => `<a class="nav-item${route.pid === p.id ? ' active' : ''}" href="#/platform/${encodeURIComponent(p.id)}"${route.pid === p.id ? ' aria-current="page"' : ''}><span class="platform-mark">${esc([...p.short].slice(0, 1).join(''))}</span><span>${esc(p.name)}</span><span class="status-dot ${p.connected && p.module.healthy ? '' : 'offline'}" title="${p.module.healthy ? p.connected ? '已连接' : '未连接' : '模块未运行'}"></span></a>`).join('') || '<p class="nav-hint">连接平台后，课程会出现在这里。</p>'}</div>
-    <div class="nav-label">工作台</div><div class="nav-group">${link('#/settings', '模型与任务设置', 'module', route.page === 'settings')}${link('#/connections', '平台连接', 'link', route.page === 'connections')}${state.me.user.role === 'admin' ? link('#/modules', '模块管理', 'module', route.page === 'modules') : ''}</div>`;
+    <div class="nav-label">工作台</div><div class="nav-group">${link('#/settings', '模型与任务设置', 'module', route.page === 'settings')}${link('#/connections', '平台连接', 'link', route.page === 'connections')}${link('#/logs', '日志导出', 'download', route.page === 'logs')}${state.me.user.role === 'admin' ? link('#/modules', '模块管理', 'module', route.page === 'modules') : ''}</div>`;
 }
 
 export function coursesView(state) {
@@ -127,7 +128,7 @@ export function modulesView(state) {
 }
 
 export function accountView(state) {
-  return heading('个人空间', '我的账号', '管理当前登录与工作台偏好。') + `<section class="panel account-panel"><span class="avatar large">${esc([...state.me.user.username][0].toUpperCase())}</span><h2>${esc(state.me.user.username)}</h2><span class="badge">${state.me.user.role === 'admin' ? '管理员' : '成员'}</span><div class="account-stats"><div><strong>${state.platforms.filter((p) => p.connected).length}</strong><span>已连接平台</span></div><div><strong>${activeTasks(state.tasks).length}</strong><span>当前任务</span></div></div><div class="settings-row"><span>模型与任务偏好</span><a class="button" href="#/settings">打开设置</a></div><div class="settings-row"><span>界面主题</span><button class="button" data-action="theme">切换深浅主题</button></div><div class="settings-row"><span>站点会话</span><button class="button danger" data-action="logout">退出登录</button></div></section>`;
+  return heading('个人空间', '我的账号', '管理当前登录与工作台偏好。') + `<section class="panel account-panel"><span class="avatar large">${esc([...state.me.user.username][0].toUpperCase())}</span><h2>${esc(state.me.user.username)}</h2><span class="badge">${state.me.user.role === 'admin' ? '管理员' : '成员'}</span><div class="account-stats"><div><strong>${state.platforms.filter((p) => p.connected).length}</strong><span>已连接平台</span></div><div><strong>${activeTasks(state.tasks).length}</strong><span>当前任务</span></div></div><div class="settings-row"><span>模型与任务偏好</span><a class="button" href="#/settings">打开设置</a></div><div class="settings-row"><span>运行与任务日志</span><a class="button" href="#/logs">日志导出</a></div><div class="settings-row"><span>界面主题</span><button class="button" data-action="theme">切换深浅主题</button></div><div class="settings-row"><span>站点会话</span><button class="button danger" data-action="logout">退出登录</button></div></section>`;
 }
 
 export function modalFrame(title, body, wide = false) {
@@ -135,5 +136,5 @@ export function modalFrame(title, body, wide = false) {
 }
 
 export function taskDetailView(task, events, quiet) {
-  return modalFrame('任务详情', `<div class="task-detail-title"><h3>${esc(task.course_name)}</h3>${badge(task.state)}</div><p class="muted">${esc(task.detail)}</p>${progress(task.progress)}<p class="muted">已完成 ${task.completed.length} / ${task.units.length} 个单元 · ${Math.round(percent(task.progress))}%</p><div class="actions">${taskActions(task, quiet)}</div><h3 class="section-title">执行记录</h3><div class="event-list">${events.map((e) => `<div class="event-row"><span class="event-dot"></span><div><p>${esc(e.detail)}</p><time class="muted">${dateText(e.created_at)}</time></div></div>`).join('') || '<p class="muted">暂无执行记录。</p>'}</div>`, true);
+  return modalFrame('任务详情', `<div class="task-detail-title"><h3>${esc(task.course_name)}</h3>${badge(task.state)}</div><p class="muted">${esc(task.detail)}</p>${progress(task.progress)}<p class="muted">已完成 ${task.completed.length} / ${task.units.length} 个单元 · ${Math.round(percent(task.progress))}%</p><div class="actions">${taskActions(task, quiet)}<a class="button" href="/api/tasks/${encodeURIComponent(task.id)}/logs" download>${icon('download')}导出日志</a></div><h3 class="section-title">执行记录</h3><div class="event-list">${events.map((e) => `<div class="event-row"><span class="event-dot"></span><div><p>${esc(e.detail)}</p><time class="muted">${dateText(e.created_at)}</time></div></div>`).join('') || '<p class="muted">暂无执行记录。</p>'}</div>`, true);
 }

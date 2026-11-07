@@ -30,7 +30,7 @@ export function registerSystemRoutes(app: FastifyInstance, { db, manager }: Serv
       module_api: MODULE_API,
       setup_required: !hasUsers(db),
       quiet_hours: current ? quietFor(db, current.user.id) : quietStatus(nowSeconds()),
-      capabilities: { modules: true, platforms: true, jobs: ['study', 'trial', 'review', 'answer', 'mastery', 'meeting', 'qa', 'ask'], task_controls: ['pause', 'resume', 'stop', 'move', 'answers', 'confirm', 'readback'], models: true, exports: ['md', 'docx', 'json', 'csv'], sse: false },
+      capabilities: { modules: true, platforms: true, jobs: ['study', 'trial', 'review', 'answer', 'mastery', 'meeting', 'qa', 'ask'], task_controls: ['pause', 'resume', 'stop', 'move', 'answers', 'confirm', 'readback'], models: true, exports: ['md', 'docx', 'json', 'csv', 'log'], logs: true, sse: false },
     };
   });
 }
