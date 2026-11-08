@@ -204,7 +204,7 @@ Node.js 使用权限模型限制文件、网络和子进程。二进制直接作
 | `cw.question_bank.lookup` | `{session,course,question,course_kind?}` → `{correct:string[]或null,wrong:string[][],updated_at:number或null}` |
 | `cw.question_bank.record` | `{session,course,question,answer,evidence}` → `{ok:true}` |
 
-`course` 建议使用 `课程编号/班级编号`；`question` 使用公共题目类型的题干、题型、选项、图片和空数。`evidence` 为 `{result:"correct"或"incorrect",source:"platform"或"reviewed",at?:Unix秒}`；模型或外部题库候选不能作为已确认记录写入。`course_kind` 仅辅助旧 Studia 智慧树指纹兼容，当前支持 `shared`、`smart`。
+`course` 建议使用 `课程编号/班级编号`；`question` 使用公共题目类型的题干、题型、选项、图片和空数。`evidence` 为 `{result:"correct"或"incorrect",source:"platform"或"reviewed",at?:Unix秒}`；模型或外部题库候选不能作为已确认记录写入。`course_kind` 仅辅助旧版智慧树题库指纹兼容，当前支持 `shared`、`smart`。
 
 所属用户及平台从会话获取，传入 `owner` 不会改变作用域，未完成登录的挑战句柄不可使用题库。内容由宿主加密，选项改编号或顺序后按完整文字映射，重复文字拒绝复用，错误组合会撤销相同的旧正确记录。接口与外部适配器定义在独立 [courseflow-question-bank](https://github.com/Course-Flow-Lab/courseflow-question-bank) 仓库。
 

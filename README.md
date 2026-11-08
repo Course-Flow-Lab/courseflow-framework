@@ -4,15 +4,15 @@ Courseflow 是基于 Node.js 的课程工作台，也是平台模块的宿主。
 
 模块不访问网络、不接触 Cookie 或密钥、不读写数据库：框架替它发请求、保存状态、计时并调度任务。平台协议因此可以各自独立演进，而调度、加密、审计和界面只需要实现一次。框架本身不包含任何平台的协议代码。
 
-界面提供平台侧栏、课程卡片、分章目录、课程功能页、任务详情、底部任务栏、深浅主题和移动导航。Studia 和 Courseweave 仅供开发参考，不是运行依赖。
+界面提供平台侧栏、课程卡片、分章目录、课程功能页、任务详情、底部任务栏、深浅主题和移动导航。平台模块独立安装，不依赖其他站点进程。
 
 | 仓库或文档 | 内容 |
 | --- | --- |
 | 本仓库 | 宿主、网页界面、模块 API 规范 |
 | [courseflow-zhs](https://github.com/Course-Flow-Lab/courseflow-zhs) | 智慧树模块。作为外部示例，模块定义、安装命令和平台能力都在它的 README |
-| [courseflow-chaoxing](https://github.com/Course-Flow-Lab/courseflow-chaoxing) | 超星独立模块，以旧 chaoxing 为基线并保留 Studia 修正 |
+| [courseflow-chaoxing](https://github.com/Course-Flow-Lab/courseflow-chaoxing) | 超星独立模块，以旧 chaoxing 为基线并保留既有协议修正 |
 | [courseflow-question-bank](https://github.com/Course-Flow-Lab/courseflow-question-bank) | 平台无关的题库、正确／错误答案记忆和外部数据源接口 |
-| [Studia 数据迁移](docs/STUDIA-MIGRATION.md) | 只读预检、全新目录导入及历史档案范围 |
+| [旧站点数据迁移](docs/LEGACY-MIGRATION.md) | 只读预检、全新目录导入及历史档案范围 |
 | [模块 API v1](spec/module-api-v1.md) | 清单、RPC、宿主服务、公共数据类型与错误的完整定义 |
 | [`modules/simulator`](modules/simulator) | 无网络的 Node.js 参考模块，测试也用它 |
 
@@ -243,4 +243,4 @@ modules/simulator/               无网络的 Node.js 参考模块
 
 离线测试覆盖模块协议、加密、任务恢复与互斥、人工补答、交卷确认、未知结果防重发、模型接口和参考模块的 fixture 链路。它们不能证明某个真实平台的所有接口都可用；平台验收必须在模块自己的仓库和真实账号上完成。
 
-功能可运行、测试通过和真实平台验收是三种状态，不能互相替代。框架不提供模块签名、网页上传安装包、操作系统级沙箱。0.1.5 提供 Studia 导入工具，仅写入全新数据目录；旧平台会话需要重新连接，历史任务只读封存，不自动恢复执行。
+功能可运行、测试通过和真实平台验收是三种状态，不能互相替代。框架不提供模块签名、网页上传安装包、操作系统级沙箱。0.1.5 提供旧站点导入工具，仅写入全新数据目录；旧平台会话需要重新连接，历史任务只读封存，不自动恢复执行。

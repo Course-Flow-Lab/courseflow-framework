@@ -16,7 +16,7 @@ const HELP = `Courseflow framework ${VERSION}
   courseflow module remove <id>            卸载模块
   courseflow module config <id> <json>     设置模块配置并重启
   courseflow doctor                        打印数据目录与配置
-  courseflow migrate studia --source <旧目录> --destination <全新目录> [--key-file <旧密钥>] [--dry-run]
+  courseflow migrate legacy --source <旧目录> --destination <全新目录> [--key-file <旧密钥>] [--dry-run]
 
 配置（环境变量）：
   CF_BIND         127.0.0.1:8099
@@ -31,7 +31,7 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const command = argv[0] ?? 'serve';
   if (command === 'migrate') {
-    if (argv[1] !== 'studia') throw new Error('迁移来源目前仅支持 studia');
+    if (!['legacy', 'studia'].includes(argv[1] ?? '')) throw new Error('迁移来源目前仅支持旧站点格式');
     const argument = (name: string) => { const index = argv.indexOf(name); return index < 0 ? undefined : argv[index + 1]; };
     const source = argument('--source'), destination = argument('--destination');
     if (!source || !destination) throw new Error('请显式指定 --source 和 --destination，目标必须是全新目录');

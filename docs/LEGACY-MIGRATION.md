@@ -1,23 +1,23 @@
-# Studia 数据迁移
+# 旧站点 数据迁移
 
-框架 0.1.5 新增 `migrate studia`。此前不能直接加载 Studia 数据；现在可以将其导入一个**尚不存在的全新目录**。工具不会合并或覆盖已有 Courseflow 数据，不启动平台请求、登录或学习任务。
+框架 0.1.5 新增 `migrate legacy`。此前不能直接加载 旧站点 数据；现在可以将其导入一个**尚不存在的全新目录**。工具不会合并或覆盖已有 Courseflow 数据，不启动平台请求、登录或学习任务。
 
 ## 多用户部署
 
-来源是包含 `studia.db`、`users/` 的旧数据目录，早期 `accounts.json` 也受支持。加密配置需要原始 `secret.key`；若密钥保存在别处，通过 `--key-file` 指定。先停止旧服务或准备一致的完整备份，避免数据库和用户配置在复制时发生变化；SQLite 备份需包含尚未合并的 WAL 内容。
+来源是包含 原站点 SQLite 数据库（保持原文件名）及 `users/` 的旧数据目录，早期 `accounts.json` 也受支持。加密配置需要原始 `secret.key`；若密钥保存在别处，通过 `--key-file` 指定。先停止旧服务或准备一致的完整备份，避免数据库和用户配置在复制时发生变化；SQLite 备份需包含尚未合并的 WAL 内容。
 
 ```sh
 # 只读预检，不创建目标目录，不打印账号或模型凭据
-npm run cli -- migrate studia \
-  --source /旧备份/studia-data \
+npm run cli -- migrate legacy \
+  --source /旧备份/oldsite-data \
   --destination "$HOME/.local/share/courseflow-imported" \
-  --key-file /私有目录/studia-secret.key --dry-run
+  --key-file /私有目录/oldsite-secret.key --dry-run
 
 # 去掉 --dry-run 后导入，仍不修改来源
-npm run cli -- migrate studia \
-  --source /旧备份/studia-data \
+npm run cli -- migrate legacy \
+  --source /旧备份/oldsite-data \
   --destination "$HOME/.local/share/courseflow-imported" \
-  --key-file /私有目录/studia-secret.key
+  --key-file /私有目录/oldsite-secret.key
 ```
 
 目标父目录须已存在，目标不能位于 Git 仓库或来源目录内。工具先检查和解密旧数据，再在私有临时目录创建新数据库，成功后整体发布到目标路径。错误密钥、格式异常或目标已存在时停止，不覆盖旧文件。
@@ -27,7 +27,7 @@ npm run cli -- migrate studia \
 没有站点数据库的本机 `settings.json`／`settings.enc` 使用新站点管理员。将新密码单独写入权限为 0600 的文件，避免放进命令参数和历史记录。
 
 ```sh
-npm run cli -- migrate studia \
+npm run cli -- migrate legacy \
   --source /旧本机配置目录 \
   --destination "$HOME/.local/share/courseflow-imported" \
   --username 管理员用户名 --password-file /私有目录/新站点密码
@@ -58,8 +58,8 @@ CF_DATA_DIR="$HOME/.local/share/courseflow-imported" \
 CF_BIND=127.0.0.1:8101 CF_PUBLIC_URL=http://127.0.0.1:8101 npm start
 ```
 
-登录后，「模型与任务设置 → Studia 迁移档案」提供本用户档案的下载入口。JSON 导出隐藏凭据字段；原始配置和平台会话不提供网页下载。列表最多展示一百个文件，完整内容仍保存在加密数据库中。历史记录供查阅，不代表当前平台状态。
+登录后，「模型与任务设置 → 旧站点 迁移档案」提供本用户档案的下载入口。JSON 导出隐藏凭据字段；原始配置和平台会话不提供网页下载。列表最多展示一百个文件，完整内容仍保存在加密数据库中。历史记录供查阅，不代表当前平台状态。
 
 ## 验证边界
 
-离线测试覆盖只读预检、旧 AES-GCM 配置、旧密码登录、密钥重新加密、题库兼容、档案所有权、错误密钥与目标保护。测试只使用合成数据，没有读取真实账号目录，也没有向本机运行中的站点导入真实 Studia 数据。
+离线测试覆盖只读预检、旧 AES-GCM 配置、旧密码登录、密钥重新加密、题库兼容、档案所有权、错误密钥与目标保护。测试只使用合成数据，没有读取真实账号目录，也没有向本机运行中的站点导入真实 旧站点 数据。
