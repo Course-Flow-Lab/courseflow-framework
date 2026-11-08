@@ -12,7 +12,7 @@ const TAG = 16;
  *   sealed     : 0x01 | nonce(12) | ciphertext|tag(16)
  *   AAD        : UTF-8 JSON array ["<owner>", "<scope>"] (no spaces)
  *
- * Verified in both directions against courseweave 0.7.0 — see docs/MODULARIZATION.md §6.1.
+ * The envelope format preserves compatibility with existing encrypted records.
  */
 export class Vault {
   #key: Buffer;
