@@ -25,3 +25,11 @@ test('问答首屏只读统计和发布记录，草稿在刷新后保留', async
   await loadQa(state, api, () => true);
   assert.deepEqual(state.feature.drafts, ['手工编辑草稿']); assert.ok(!calls.some((p) => p.endsWith('/catalog/qa')));
 });
+
+test('超额开关默认不放宽目标，开启后允许超过已有统计且明确标注风险',()=>{
+  const complete={score:{qa:{validQuestionAmount:15,validAnswerAmount:25}},own_posts:[]};
+  assert.deepEqual(qaSummary(complete,now).room,{ask:0,answer:0});
+  assert.deepEqual(qaSummary(complete,now,true).room,{ask:50,answer:50});
+  const html=qaView({feature:{data:complete,drafts:[],selected:[],counts:{ask:30,answer:40}},route:{pid:'zhs'},platforms:[{id:'zhs',operations:['qa','ask']}],bootstrap:{quiet_hours:{active:false}},settings:{preferences:{qa_allow_over_limit:true}}});
+  assert.match(html,/有风险/);assert.match(html,/触发平台限制/);assert.match(html,/答 40 条/);assert.match(html,/允许超额问答（有风险）[^>]*aria-checked="true"/);
+});

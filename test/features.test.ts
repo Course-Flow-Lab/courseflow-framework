@@ -175,3 +175,18 @@ test('题型答案校验和文档导出保留中文、图片与已确认状态',
   const md = await exportReport(report, 'md', 'http://localhost:8099', async () => { throw new Error(); }); assert.match(md.data.toString(), /平台已确认/);
   const csv = await exportReport(report, 'csv', '', async () => { throw new Error(); }); assert.match(csv.data.toString(), /'=SUM/);
 });
+
+test('平台公布的弹题标准答案自动入内置题库，无需调用模型',async(t)=>{
+  const {runtime}=await boot('courseflow-known-interaction-');t.after(()=>runtime.close());
+  const session=await setupAdmin(runtime);const {owner,course}=await connected(runtime,session);
+  const unit=(await runtime.manager.units(owner,'sim',course)).find(item=>item.kind==='video'&&item.state!=='completed')!;
+  const known={...question('known'),correct_answer:['b']};let generations=0;
+  runtime.ai.generate=async()=>{generations++;throw new Error('已确认标准答案不得再调用模型');};
+  runtime.manager.studyStep=async(_owner,_platform,_course,_unit,_checkpoint,options)=>{
+    if(!(options.interaction_answers as any)?.known)return {status:'needs_ai',questions:[known],checkpoint:{}};
+    assert.deepEqual((options.interaction_answers as any).known,['b']);return {status:'completed',checkpoint:{}};
+  };
+  const task=runtime.jobs.create(owner,{platform:'sim',course,unit_ids:[unit.id],operation:'study',options:{use_ai:false}});
+  await waitFor(runtime,session,task.id,'completed');assert.equal(generations,0);
+  assert.deepEqual(runtime.questionBank.get(owner,'sim',`${course.id}/${course.recruit_id}`,known),['b']);
+});

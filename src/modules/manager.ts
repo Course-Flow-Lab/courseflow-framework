@@ -9,7 +9,7 @@ import type { JobScope } from '../core/sessions.ts';
 import type { AiService } from '../services/ai.ts';
 import type { BrowserService } from '../services/browser.ts';
 import type { AnswerMemory } from '../services/answers.ts';
-import { validateQuestion, type Evidence } from '@courseflow/question-bank';
+import { validateQuestion, type Evidence } from '../question-bank/index.js';
 import { preferences, quietFor } from '../core/preferences.ts';
 import { digest, nowSeconds, randomId } from '../core/domain.ts';
 import { AppError, badRequest, notFound } from '../core/errors.ts';
@@ -581,6 +581,7 @@ export class ModuleManager {
       case 'cw.session.identity':
         return this.sessionIdentity(moduleId, params);
       case 'cw.question_bank.lookup':
+      case 'cw.question_bank.confirm':
       case 'cw.question_bank.record': {
         const entry = this.sessions.resolveFetch(this.requireSessionParam(params), moduleId);
         const manifest = JSON.parse(this.requireRow(moduleId).manifest) as Manifest;
@@ -589,6 +590,12 @@ export class ModuleManager {
         try {
           validateQuestion(params.question as Parameters<typeof validateQuestion>[0]);
           if (method === 'cw.question_bank.lookup') return this.memory.lookup(entry.owner, moduleId, params.course, params.question as Question, typeof params.course_kind === 'string' ? params.course_kind : undefined);
+          if (method === 'cw.question_bank.confirm') {
+            const confirmation = params.confirmation as { confirmed?: boolean; source?: string } | undefined;
+            if (confirmation?.confirmed !== true || confirmation.source !== 'platform') throw badRequest('只有平台已确认的答案可以通过确认接口入库');
+            this.memory.record(entry.owner, moduleId, params.course, params.question as Question, params.answer as string[], { result: 'correct', source: 'platform', at: nowSeconds() });
+            return { ok: true };
+          }
           this.memory.record(entry.owner, moduleId, params.course, params.question as Question, params.answer as string[], params.evidence as Evidence);
           return { ok: true };
         } catch (error) { if (error instanceof TypeError) throw badRequest(error.message); throw error; }

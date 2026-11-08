@@ -286,6 +286,17 @@ export class JobEngine {
     if (quietFor(this.db, owner).active) {
       throw conflict('quiet_hours', '夜间暂停期间不能新建任务');
     }
+    const user = preferences(this.db, owner);
+    if (input.operation === 'ask') {
+      const texts = input.options?.texts;
+      const cap = user.qa_allow_over_limit ? 50 : 10;
+      if (!Array.isArray(texts) || texts.length < 1 || texts.length > cap || texts.some(text => typeof text !== 'string' || [...text.trim()].length < 10 || [...text].length > 1000)) throw badRequest(`请提供 1–${cap} 条有效提问草稿`);
+    }
+    if (input.operation === 'qa') {
+      const limit = input.options?.limit ?? 5;
+      const cap = user.qa_allow_over_limit ? 50 : 20;
+      if (!Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > cap) throw badRequest(`本次回答数量应为 1–${cap}`);
+    }
     const id = randomId();
     const now = nowSeconds();
     this.db.run(
@@ -302,8 +313,7 @@ export class JobEngine {
       now,
     );
     this.event(id, 'created', `已创建任务：${input.course.name}`);
-    const user = preferences(this.db, owner);
-    const data: JobInput = { account, connection, version: this.manager.moduleVersion(input.platform), options: { parallel_study: user.parallel_study, speedup: user.speedup, review_minutes: user.review_minutes, model_id: user.model_id, ...input.options } };
+    const data: JobInput = { account, connection, version: this.manager.moduleVersion(input.platform), options: { parallel_study: user.parallel_study, speedup: user.speedup, review_minutes: user.review_minutes, model_id: user.model_id, ...input.options, ...(['qa', 'ask'].includes(input.operation) ? { allow_over_limit: user.qa_allow_over_limit } : {}) } };
     const sealed = this.vault.sealJson(owner, `job/${id}/input`, data);
     this.db.run('INSERT INTO task_inputs VALUES(?1,?2)', id, new Uint8Array(sealed));
     const order = this.db.get<{ n: number }>('SELECT coalesce(max(position),0)+1 AS n FROM task_order')!.n;
@@ -503,13 +513,21 @@ export class JobEngine {
             const answers = checkpoint.interactions?.[unit.id] ?? {};
             checkpoint.workflow = { kind: 'interaction', phase: 'waiting_answers', unit_id: unit.id, questions, answers, preserve: [] };
             for (const q of questions) q.images = (q.images ?? []).map((url) => this.manager.registerImage(current.owner, current.platform, url));
+            for (const q of questions) {
+              const courseKey = `${course.id}/${course.recruit_id}`;
+              if (validAnswer(q, q.correct_answer)) this.memory?.remember(current.owner, current.platform, courseKey, q, q.correct_answer);
+              if (!validAnswer(q, answers[q.id])) {
+                const known = this.memory?.get(current.owner, current.platform, courseKey, q, course.kind);
+                if (known) answers[q.id] = known;
+              }
+            }
             this.saveCheckpoint(taskId, current.owner, checkpoint);
             try {
-              if (!this.ai || input.options.use_ai === false) throw badRequest('请在任务详情中人工回答视频弹题');
+              if ((!this.ai || input.options.use_ai === false) && questions.some(q => !validAnswer(q, answers[q.id]))) throw badRequest('请在任务详情中人工回答视频弹题');
               for (const q of questions) {
                 if (validAnswer(q, answers[q.id])) continue;
                 const images = await Promise.all((q.images ?? []).map((url) => this.manager.image(current.owner, current.platform, url)));
-                const raw = await this.ai.generate(current.owner, questionPrompt(q), { modelId: input.options.model_id as string | undefined, system: ANSWER_SYSTEM, images, signal: controller.signal });
+                const raw = await this.ai!.generate(current.owner, questionPrompt(q), { modelId: input.options.model_id as string | undefined, system: ANSWER_SYSTEM, images, signal: controller.signal });
                 if (controller.signal.aborted || !this.stillRunning(taskId, generation)) return;
                 answers[q.id] = parseModelAnswer(q, raw).answer;
               }

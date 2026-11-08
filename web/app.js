@@ -121,7 +121,7 @@ async function loadWorkspace() {
   if (generation !== sessionGeneration) return;
   state.platforms = platforms.platforms;
   state.tasks = tasks.tasks;
-  state.modules = modules.modules;
+  state.modules = modules.modules; state.builtinModules = modules.builtins || [];
   $('#auth').hidden = true;
   $('#workspace').hidden = false;
   $('#version').textContent = `v${state.bootstrap.version}`;
@@ -180,8 +180,8 @@ async function loadRoute(force = false) {
         state.units = result.units;
         state.presentation = result.ui;
       } else { const result = await api(coursePath(route.pid, course) + '/details'); if (generation !== routeGeneration) return; state.course = course; state.presentation = result.ui; }
-      await features.load(state, api, () => generation === routeGeneration && Boolean(state.me));
-    } else if (state.route.page === 'settings') await features.load(state, api, () => generation === routeGeneration && Boolean(state.me));
+      await features.load(state, api, () => generation === routeGeneration && Boolean(state.me), () => { if (generation === routeGeneration && state.me) { state.loading = false; renderPage(); } });
+    } else if (state.route.page === 'settings') await features.load(state, api, () => generation === routeGeneration && Boolean(state.me), () => { if (generation === routeGeneration && state.me) { state.loading = false; renderPage(); } });
     else if (state.route.page === 'invitations' && state.me.user.role === 'admin') await loadInvitations(state, api, () => generation === routeGeneration && Boolean(state.me));
   } catch (error) {
     if (generation === routeGeneration && state.me) showError(error);
@@ -197,7 +197,7 @@ async function refreshConnections() {
   ]);
   if (generation !== sessionGeneration) return;
   state.platforms = platforms.platforms;
-  state.modules = modules.modules;
+  state.modules = modules.modules; state.builtinModules = modules.builtins || [];
   for (const pid of Object.keys(state.courseLists)) {
     if (!state.platforms.some((p) => p.id === pid && p.connected)) {
       delete state.courseLists[pid];

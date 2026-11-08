@@ -11,7 +11,7 @@ Courseflow 是基于 Node.js 的课程工作台，也是平台模块的宿主。
 | 本仓库 | 宿主、网页界面、模块 API 规范 |
 | [courseflow-zhs](https://github.com/Course-Flow-Lab/courseflow-zhs) | 智慧树模块。作为外部示例，模块定义、安装命令和平台能力都在它的 README |
 | [courseflow-chaoxing](https://github.com/Course-Flow-Lab/courseflow-chaoxing) | 超星独立模块，以旧 chaoxing 为基线并保留既有协议修正 |
-| [courseflow-question-bank](https://github.com/Course-Flow-Lab/courseflow-question-bank) | 平台无关的题库、正确／错误答案记忆和外部数据源接口 |
+| [内置题库](src/question-bank/README.md) | 框架内统一题库、已确认答案记忆及模块公共接口，无独立运行依赖 |
 | [旧站点数据迁移](docs/LEGACY-MIGRATION.md) | 只读预检、全新目录导入及历史档案范围 |
 | [模块 API v1](spec/module-api-v1.md) | 清单、RPC、宿主服务、公共数据类型与错误的完整定义 |
 | [`modules/simulator`](modules/simulator) | 无网络的 Node.js 参考模块，测试也用它 |
@@ -111,7 +111,7 @@ npm test
 | `cw.net.fetch` | 唯一的出网通道。宿主注入会话 Cookie／令牌、执行网络白名单、拒绝模块设置 Cookie／Host、限制重定向、按用户的夜间暂停设置限制非只读阶段，并按 `commit` 记录请求台账 |
 | `cw.state` | 按模块、用户、命名空间和键隔离的加密键值存储；`cw.state.get`、`cw.state.set` 是显式别名 |
 | `cw.session.identity` | 框架在登录完成时保存的平台身份，不是 Cookie 或令牌 |
-| `cw.question_bank.lookup`／`cw.question_bank.record` | 需声明 `question_bank: true`；按当前会话所属用户、平台和课程加密隔离 |
+| `cw.question_bank.lookup`／`cw.question_bank.confirm`／`cw.question_bank.record` | 需声明 `question_bank: true`；按当前会话所属用户、平台和课程加密隔离 |
 | `cw.ai.generate` | 用站点用户选中的模型生成文本；需要清单 `ai: true`，模块拿不到密钥 |
 | `cw.browser.*` | 官方页面的打开、脚本求值和关闭；页面绑定用户、平台与任务代次，需要 `browser: true` |
 | `cw.peers.*` | 站内同课程互助的已确认发布编号；双方都开启才可读 |
@@ -170,6 +170,12 @@ npm run cli -- doctor
 ### 版本
 
 `moduleApi` 是主版本闸门，框架支持 N 与 N-1；`engines.framework` 声明模块测试过的框架范围。两类不匹配都在安装时拒绝并写明两侧版本。规范变更记录在[模块 API v1](spec/module-api-v1.md)。
+
+## 问答与成绩分析
+
+问答区的“允许超额问答（有风险）”默认关闭。开启后可超过提问 10 条／回答 20 条的默认计分目标和本工作台每日上限，每批最多 50 条；草稿按十条分批生成，发布仍逐条间隔发送。额外内容可能不计分、触发平台限制并增加模型费用；平台返回的拒绝或额外验证不会被绕过。开关按用户保存，关闭后正在执行的后续步骤恢复默认限制。
+
+成绩页按模块声明的分区分别加载：当前成绩、学习习惯、问答互动、考核占比各自显示状态和更新时间。某一区域失败时可单独重试，不清空其他区域；缺失值显示待提供，真实零分仍显示零分。旧模块没有声明分区时保留完整成绩展示。
 
 ## 编写模块
 

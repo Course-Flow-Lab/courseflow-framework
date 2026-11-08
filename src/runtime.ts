@@ -10,6 +10,7 @@ import { createApp } from './server/app.ts';
 import { FRAMEWORK_VERSION } from './version.ts';
 import { AiService } from './services/ai.ts';
 import { AnswerMemory } from './services/answers.ts';
+import { QuestionBankService } from './question-bank/service.ts';
 import { BrowserService } from './services/browser.ts';
 import { LogStore, redactLog } from './services/logs.ts';
 import { configureProxy } from './core/network.ts';
@@ -26,6 +27,7 @@ export type Runtime = {
   jobs: JobEngine;
   ai: AiService;
   memory: AnswerMemory;
+  questionBank: QuestionBankService;
   browser: BrowserService;
   logs: LogStore;
   app: FastifyInstance;
@@ -64,7 +66,7 @@ export async function createRuntime(
     const vault = Vault.open(config.keyPath, hasSecrets);
     const sessions = new Sessions(db, vault);
     const ai = new AiService(db, vault);
-    const memory = new AnswerMemory(db, vault);
+    const memory = new QuestionBankService(db, vault);
     const browser = new BrowserService(config.dataDir);
     const manager = new ModuleManager({ db, vault, sessions, modulesDir: config.modulesDir, log, ai, browser, memory });
     const jobs = new JobEngine({ db, vault, manager, log, ai, memory, recoverInterrupted: options.recoverTasks });
@@ -73,7 +75,7 @@ export async function createRuntime(
     log('info', `Courseflow ${VERSION} 运行时已就绪`);
     let closing: Promise<void> | undefined;
     return {
-      config, db, vault, sessions, manager, jobs, app, setupCode, ai, memory, browser, logs,
+      config, db, vault, sessions, manager, jobs, app, setupCode, ai, memory, questionBank: memory, browser, logs,
       close: () => closing ??= (async () => {
         await app.close();
         await jobs.shutdown();

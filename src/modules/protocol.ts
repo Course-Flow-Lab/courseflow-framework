@@ -20,6 +20,7 @@ export type PlatformDescriptor = {
   unit_kinds: string[];
   max_speed?: number;
   keepalive_seconds?: number;
+  score_sections?: PresentationTab[];
   presentation?: { tabs?: PresentationTab[]; actions?: PresentationTab[] };
 };
 
@@ -258,6 +259,7 @@ export function validateManifest(raw: unknown): Manifest {
       unit_kinds: unitKinds,
       max_speed: typeof platformRaw.max_speed === 'number' ? platformRaw.max_speed : undefined,
       keepalive_seconds: typeof platformRaw.keepalive_seconds === 'number' && Number.isInteger(platformRaw.keepalive_seconds) && platformRaw.keepalive_seconds >= 60 ? platformRaw.keepalive_seconds : undefined,
+      score_sections: readScoreSections(platformRaw.score_sections),
       presentation,
     },
     permissions: {
@@ -291,6 +293,14 @@ function readEntries(value: unknown, where: string): PresentationTab[] {
   });
 }
 
+function readScoreSections(value: unknown): PresentationTab[] {
+  const entries = readEntries(value, 'platform.score_sections');
+  if (entries.length > 8 || new Set(entries.map(entry => entry.id)).size !== entries.length || entries.some(entry => !/^[a-z][a-z0-9_-]{0,31}$/.test(entry.id))) {
+    throw badRequest('成绩分区最多八个，编号必须唯一并使用小写字母、数字、短横线或下划线', 'invalid_manifest');
+  }
+  return entries;
+}
+
 export function evaluateWhen(
   when: When | undefined,
   course: { kind?: string; family?: string } | undefined,
@@ -307,8 +317,8 @@ export function evaluateWhen(
 export function resolvePresentation(
   descriptor: PlatformDescriptor,
   course: { kind?: string; family?: string } | undefined,
-): { tabs: PresentationTab[]; actions: PresentationTab[] } {
+): { tabs: PresentationTab[]; actions: PresentationTab[]; score_sections?: PresentationTab[] } {
   const pick = (list: PresentationTab[] | undefined): PresentationTab[] =>
     (list ?? []).filter((entry) => evaluateWhen(entry.when, course));
-  return { tabs: pick(descriptor.presentation?.tabs), actions: pick(descriptor.presentation?.actions) };
+  return { tabs: pick(descriptor.presentation?.tabs), actions: pick(descriptor.presentation?.actions), ...(descriptor.score_sections?.length ? { score_sections: pick(descriptor.score_sections) } : {}) };
 }

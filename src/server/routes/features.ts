@@ -20,11 +20,12 @@ export function registerFeaturesRoutes(app: FastifyInstance, c: ServerContext): 
     const descriptor = await c.manager.describe(request.params.pid);
     return { course: found, ui: c.manager.presentation(descriptor.platform, found) };
   });
-  app.get<{ Params: CourseParams & { section: string }; Querystring: { page?: string; cursor?: string } }>(root + '/catalog/:section', async (request) => {
+  app.get<{ Params: CourseParams & { section: string }; Querystring: { page?: string; cursor?: string; part?: string } }>(root + '/catalog/:section', async (request) => {
     const who = requireIdentity(request); const found = await course(who.user.id, request.params);
     const methods: Record<string, string> = { papers: 'catalog.papers', mastery: 'catalog.mastery', meetings: 'catalog.meetings', score: 'catalog.score', qa: 'qa.board', posts: 'qa.posts' };
     const method = methods[request.params.section]; if (!method) throw notFound('找不到此课程功能');
-    return c.manager.invoke(who.user.id, request.params.pid, method, { course: found, page: request.query.page, cursor: Number(request.query.cursor || 0) });
+    if (request.query.part && !/^[a-z][a-z0-9_-]{0,31}$/.test(request.query.part)) throw badRequest('成绩分区编号无效');
+    return c.manager.invoke(who.user.id, request.params.pid, method, { course: found, page: request.query.page, cursor: Number(request.query.cursor || 0), ...(request.query.part ? { part: request.query.part } : {}) });
   });
   app.post<{ Params: CourseParams; Body: JobBody }>(root + '/jobs', async (request) => {
     const who = requireIdentity(request, { write: true }); const params = request.params;
