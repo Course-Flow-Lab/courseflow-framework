@@ -1,6 +1,6 @@
 {
   "name": "courseflow-framework",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "type": "module",
   "description": "基于 Node.js 的课程工作台与平台模块宿主",
@@ -18,7 +18,6 @@
     "cli": "node src/main.ts"
   },
   "dependencies": {
-    "@courseflow/question-bank": "file:vendor/courseflow-question-bank",
     "argon2": "^0.45.2",
     "fastify": "^5.12.0",
     "undici": "^8.12.4"

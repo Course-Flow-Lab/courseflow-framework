@@ -8,6 +8,7 @@ export function registerModulesRoutes(app: FastifyInstance, context: ServerConte
   app.get('/api/modules', async (request) => {
     requireIdentity(request, { admin: true });
     return {
+      builtins: [{ id: 'question-bank', name: '统一题库', interface_version: 1, running: true, description: '框架内置，按用户和课程加密隔离；平台确认正确后自动入库。' }],
       modules: manager.list().map((row) => ({
         id: row.id,
         name: row.manifestJson.name,

@@ -1,6 +1,6 @@
 # Courseflow 模块 API v1
 
-本文描述框架与独立平台模块之间的实际协议。当前框架 `0.1.5` 仅支持 `moduleApi: 1`。新增可选方法使用框架版本范围控制兼容性，不承诺尚未实现的上一代主版本兼容。
+本文描述框架与独立平台模块之间的实际协议。当前框架 `0.1.6` 仅支持 `moduleApi: 1`。新增可选方法使用框架版本范围控制兼容性，不承诺尚未实现的上一代主版本兼容。
 
 模块是常驻子进程，stdin／stdout 使用 UTF-8、每行一个 JSON 对象的 JSON-RPC 2.0。`error.code` 使用稳定字符串；通知没有 `id`。stdout 只能输出协议，日志写 stderr。模块的网络、状态、模型和浏览器操作经宿主服务调用。
 
@@ -122,6 +122,10 @@ Node.js 使用权限模型限制文件、网络和子进程。二进制直接作
 
 框架 0.1.5 起，`catalog.courses`、`catalog.units`、`catalog.papers` 可返回 `next_cursor`。宿主在下一次调用附带 `cursor`，按顺序合并同名数组；省略或返回 `null` 表示结束。每次调用仍须三十秒内完成，不分页的现有模块无需修改。单次聚合最多两千页、两万项，游标序列化最多 8192 字节；重复游标停止并报错，每页请求前重新检查会话。
 
+### 成绩分区（框架 ≥ 0.1.6）
+
+平台可声明 `platform.score_sections:[{id,label,when?}]`，宿主按课程过滤后返回课程展示信息。每区请求 `catalog.score {session,course,part:id}`，返回 `{title,description?,metrics:[{label,value:number或null,max?:number,unit?,detail?}],note?}`。缺失数值保留 `null`，不得以零填补或估算平台成绩。网页并行填充各区域，保留分区错误与单独刷新。没有分区声明的模块仍使用完整 `catalog.score`。
+
 ### 试卷与作答扩展
 
 | 方法 | 关键参数 | 结果 |
@@ -140,6 +144,10 @@ Node.js 使用权限模型限制文件、网络和子进程。二进制直接作
 `answers` 为题目编号到字符串数组的映射。`phase` 为 `draft` 或 `submit`。草稿分批执行，每次只发一批并返回游标；`preserve_ids` 排除平台原有作答。掌握度不支持草稿时返回 `draft_supported:false`，仍等待用户确认后提交。
 
 宿主在交卷前持久化操作锁。模块不能把 HTTP 应答视为已确认提交；回读必须返回原 `attempt_id`。`graded_answers` 只能包含平台公开或已判为正确的答案。已提交内容不得通过写入式开卷接口读取。
+
+### 超额问答选项（框架 ≥ 0.1.6）
+
+`activity.step.options.allow_over_limit` 来自所属用户偏好，客户端不能通过任务参数伪造。默认关闭，提问／回答保持原有 10／20 条计分目标与本工作台日上限；开启后每批最多 50 条。模块仍保留逐条间隔、发布意图、未知结果防重发与平台拒绝处理。关闭偏好后，活动后续步骤收到 `false`，保留原检查点。
 
 ### 课程活动扩展
 
@@ -202,11 +210,12 @@ Node.js 使用权限模型限制文件、网络和子进程。二进制直接作
 | 方法 | 参数／结果 |
 | --- | --- |
 | `cw.question_bank.lookup` | `{session,course,question,course_kind?}` → `{correct:string[]或null,wrong:string[][],updated_at:number或null}` |
+| `cw.question_bank.confirm` | `{session,course,question,answer,confirmation:{confirmed:true,source:"platform",reference?}}` → `{ok:true}`；仅确认正确答案 |
 | `cw.question_bank.record` | `{session,course,question,answer,evidence}` → `{ok:true}` |
 
-`course` 建议使用 `课程编号/班级编号`；`question` 使用公共题目类型的题干、题型、选项、图片和空数。`evidence` 为 `{result:"correct"或"incorrect",source:"platform"或"reviewed",at?:Unix秒}`；模型或外部题库候选不能作为已确认记录写入。`course_kind` 仅辅助旧版智慧树题库指纹兼容，当前支持 `shared`、`smart`。
+`course` 建议使用 `课程编号/班级编号`；`question` 使用公共题目类型的题干、题型、选项、图片和空数。确认接口中的 `confirmed:true` 指答案已被平台公布或判为正确，不能仅凭提交成功或模型候选填写。框架在作业回读、标准答案和弹题处理时统一收集已确认答案。`evidence` 为 `{result:"correct"或"incorrect",source:"platform"或"reviewed",at?:Unix秒}`；模型或外部题库候选不能作为已确认记录写入。`course_kind` 仅辅助旧版智慧树题库指纹兼容，当前支持 `shared`、`smart`。
 
-所属用户及平台从会话获取，传入 `owner` 不会改变作用域，未完成登录的挑战句柄不可使用题库。内容由宿主加密，选项改编号或顺序后按完整文字映射，重复文字拒绝复用，错误组合会撤销相同的旧正确记录。接口与外部适配器定义在独立 [courseflow-question-bank](https://github.com/Course-Flow-Lab/courseflow-question-bank) 仓库。
+所属用户及平台从会话获取，传入 `owner` 不会改变作用域，未完成登录的挑战句柄不可使用题库。内容由宿主加密，选项改编号或顺序后按完整文字映射，重复文字拒绝复用，错误组合会撤销相同的旧正确记录。接口、核心实现和外部适配器位于框架的 [内置题库模块](../src/question-bank/README.md)。
 
 `cw.session.identity` 在登录挑战期间也可返回宿主已收到的公开身份：数值型 `_uid`／`UID` 对应 `user_id`，数值型 `fid` 对应 `organization_id`。不会返回原 Cookie、令牌或其他用户身份；完成连接前 `account_raw` 可以为空。
 

@@ -8,6 +8,7 @@ const ASSETS = [
   ['/app.js', 'app.js', 'text/javascript'],
   ['/api.js', 'api.js', 'text/javascript'],
   ['/qa.js', 'qa.js', 'text/javascript'],
+  ['/score.js', 'score.js', 'text/javascript'],
   ['/logs.js', 'logs.js', 'text/javascript'],
   ['/invitations.js', 'invitations.js', 'text/javascript'],
   ['/features.js', 'features.js', 'text/javascript'],

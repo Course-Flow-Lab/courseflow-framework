@@ -6,6 +6,7 @@ import { AnswerMemory, validAnswer, parseModelAnswer, questionPrompt, ANSWER_SYS
 import { digest, nowSeconds, randomId, sleep } from '../core/domain.ts';
 import type { TaskRow, Checkpoint, JobInput } from './engine.ts';
 import { conflict } from '../core/errors.ts';
+import { preferences } from '../core/preferences.ts';
 
 export type WorkflowContext = {
   db: Db; manager: ModuleManager; ai: AiService; memory: AnswerMemory;
@@ -90,7 +91,7 @@ async function activity(c: WorkflowContext) {
       c.check();
       const position = c.checkpoint.positions[id] ?? null;
       const result = await call(c, 'activity.step', { operation: c.task.operation, item_id: id, checkpoint: position,
-        options: { ...c.input.options, execution_id: `${c.task.id}/${c.task.generation}` } });
+        options: { ...c.input.options, allow_over_limit: preferences(c.db, c.task.owner).qa_allow_over_limit, execution_id: `${c.task.id}/${c.task.generation}` } });
       if (result.diagnostic != null) {
         const diagnostic = JSON.stringify(result.diagnostic).slice(0, 4000);
         c.checkpoint.activity_diagnostics ??= {};
@@ -158,6 +159,7 @@ async function answer(c: WorkflowContext) {
       for (const q of state.attempt!.questions) q.images = (q.images ?? []).map((url) => c.manager.registerImage(c.task.owner, c.task.platform, url));
       state.answers = {}; state.explanations = {}; state.preserve = []; state.cursor = 0; state.confirmed = false; state.phase = 'answers';
       for (const q of state.attempt!.questions) {
+        if (validAnswer(q, q.correct_answer)) c.memory.remember(c.task.owner, c.task.platform, courseKey, q, q.correct_answer);
         if (validAnswer(q, q.answer)) { state.answers[q.id] = q.answer; state.preserve.push(q.id); }
         else { const known = c.memory.get(c.task.owner, c.task.platform, courseKey, q, c.course.kind); if (known) state.answers[q.id] = known; }
       }
@@ -262,7 +264,10 @@ async function answer(c: WorkflowContext) {
       }
       if (result.review?.questions) for (const q of attempt.questions) {
         const reviewed = result.review.questions.find((r: Question) => r.id === q.id);
-        if (reviewed) { q.correct_answer = reviewed.correct_answer; q.explanation = reviewed.explanation; }
+        if (reviewed) {
+          q.correct_answer = reviewed.correct_answer; q.explanation = reviewed.explanation;
+          if (validAnswer(q, reviewed.correct_answer)) c.memory.remember(c.task.owner, c.task.platform, courseKey, q, reviewed.correct_answer);
+        }
       }
       state.records.push({ paper: state.paper, attempt, answers: state.answers, explanations: state.explanations, score: result.score ?? null, confirmed: true, completed_at: nowSeconds() });
       c.event('submission_confirmed', `平台已确认：${attempt.name}${result.score == null ? '' : ` · ${result.score} 分`}`);
