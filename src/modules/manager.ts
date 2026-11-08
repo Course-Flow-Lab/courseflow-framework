@@ -8,10 +8,12 @@ import type { Sessions } from '../core/sessions.ts';
 import type { JobScope } from '../core/sessions.ts';
 import type { AiService } from '../services/ai.ts';
 import type { BrowserService } from '../services/browser.ts';
+import type { AnswerMemory } from '../services/answers.ts';
+import { validateQuestion, type Evidence } from '@courseflow/question-bank';
 import { preferences, quietFor } from '../core/preferences.ts';
 import { digest, nowSeconds, randomId } from '../core/domain.ts';
 import { AppError, badRequest, notFound } from '../core/errors.ts';
-import type { Course, DescribeResult, Manifest, PlatformDescriptor, Unit } from './protocol.ts';
+import type { Course, DescribeResult, Manifest, PlatformDescriptor, Unit, Question } from './protocol.ts';
 import { resolvePresentation, satisfiesRange, validateManifest } from './protocol.ts';
 import { mapPlatformStatus, mergeCookies, performFetch, type Cookie, NetError } from './net.ts';
 import { ModuleRunner } from './runner.ts';
@@ -53,6 +55,7 @@ export class ModuleManager {
   private restartTimers = new Map<string, NodeJS.Timeout>();
   private ai?: AiService;
   private browser?: BrowserService;
+  private memory?: AnswerMemory;
   private hostOperations = new Set<Promise<unknown>>();
   private maintenanceTimer: NodeJS.Timeout;
   private maintaining?: Promise<void>;
@@ -67,6 +70,7 @@ export class ModuleManager {
     log: Logger;
     ai?: AiService;
     browser?: BrowserService;
+    memory?: AnswerMemory;
   }) {
     this.db = options.db;
     this.vault = options.vault;
@@ -75,6 +79,7 @@ export class ModuleManager {
     this.log = options.log;
     this.ai = options.ai;
     this.browser = options.browser;
+    this.memory = options.memory;
     this.maintenanceTimer = setInterval(() => { if (!this.maintaining) this.maintaining = this.maintain().finally(() => { this.maintaining = undefined; }); }, 60_000);
     this.maintenanceTimer.unref();
   }
@@ -444,7 +449,7 @@ export class ModuleManager {
 
   async courses(owner: string, platform: string): Promise<Course[]> {
     const handle = this.requireSession(owner, platform);
-    const result = (await this.call(platform, 'catalog.courses', { session: handle })) as {
+    const result = (await this.catalog(platform, 'catalog.courses', { session: handle }, 'courses')) as {
       courses?: Course[];
     };
     if (!Array.isArray(result?.courses)) {
@@ -455,10 +460,10 @@ export class ModuleManager {
 
   async units(owner: string, platform: string, course: Course): Promise<Unit[]> {
     const handle = this.requireSession(owner, platform);
-    const result = (await this.call(platform, 'catalog.units', {
+    const result = (await this.catalog(platform, 'catalog.units', {
       session: handle,
       course,
-    })) as { units?: Unit[] };
+    }, 'units')) as { units?: Unit[] };
     if (!Array.isArray(result?.units)) {
       throw new AppError(502, 'module_protocol_error', '模块没有返回目录');
     }
@@ -495,6 +500,7 @@ export class ModuleManager {
   async invoke(owner: string, platform: string, method: string, params: Record<string, unknown>, job?: JobScope): Promise<any> {
     const session = job ? this.sessions.jobHandle(owner, platform, job) : this.requireSession(owner, platform);
     if (job && !this.jobSignals.has(job.id)) this.jobSignals.set(job.id, new AbortController());
+    if (method === 'catalog.papers') return this.catalog(platform, method, { ...params, session }, 'papers');
     return this.call(platform, method, { ...params, session });
   }
   cancelJob(id: string): void {
@@ -539,6 +545,25 @@ export class ModuleManager {
     return runner.call(method, params);
   }
 
+  private async catalog(platform: string, method: string, params: Record<string, unknown>, field: string): Promise<Record<string, unknown>> {
+    const items: unknown[] = [];
+    const seen = new Set<string>();
+    let cursor: unknown = undefined;
+    for (let page = 0; page < 2000; page += 1) {
+      this.sessions.resolveFetch(String(params.session), platform);
+      const result = await this.call(platform, method, { ...params, ...(cursor === undefined ? {} : { cursor }) }) as Record<string, unknown>;
+      if (!result || !Array.isArray(result[field])) throw new AppError(502, 'module_protocol_error', '模块目录分页格式不正确');
+      items.push(...result[field] as unknown[]);
+      if (items.length > 20_000) throw new AppError(502, 'module_protocol_error', '模块目录超过两万项');
+      const next = result.next_cursor;
+      if (next === undefined || next === null || next === false || next === '') return { ...result, [field]: items, next_cursor: null };
+      const key = JSON.stringify(next);
+      if (key.length > 8192 || seen.has(key)) throw new AppError(502, 'module_protocol_error', '模块目录分页游标重复或过长');
+      seen.add(key); cursor = next;
+    }
+    throw new AppError(502, 'module_protocol_error', '模块目录分页次数超限');
+  }
+
   // ---------------------------------------------------------------- host services
 
   private async hostCall(moduleId: string, method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -555,6 +580,19 @@ export class ModuleManager {
         return this.hostFetch(moduleId, params);
       case 'cw.session.identity':
         return this.sessionIdentity(moduleId, params);
+      case 'cw.question_bank.lookup':
+      case 'cw.question_bank.record': {
+        const entry = this.sessions.resolveFetch(this.requireSessionParam(params), moduleId);
+        const manifest = JSON.parse(this.requireRow(moduleId).manifest) as Manifest;
+        if (!manifest.permissions.question_bank || !this.memory || entry.kind !== 'session') throw new AppError(403, 'permission_denied', '模块未获得题库权限或尚未完成登录');
+        if (typeof params.course !== 'string' || !params.course || params.course.length > 1000) throw badRequest('题库课程范围无效');
+        try {
+          validateQuestion(params.question as Parameters<typeof validateQuestion>[0]);
+          if (method === 'cw.question_bank.lookup') return this.memory.lookup(entry.owner, moduleId, params.course, params.question as Question, typeof params.course_kind === 'string' ? params.course_kind : undefined);
+          this.memory.record(entry.owner, moduleId, params.course, params.question as Question, params.answer as string[], params.evidence as Evidence);
+          return { ok: true };
+        } catch (error) { if (error instanceof TypeError) throw badRequest(error.message); throw error; }
+      }
       case 'cw.ai.generate': {
         const entry = this.sessions.resolveFetch(this.requireSessionParam(params), moduleId);
         const manifest = JSON.parse(this.requireRow(moduleId).manifest) as Manifest;
@@ -705,14 +743,17 @@ export class ModuleManager {
     const session = this.requireSessionParam(params);
     const entry = this.sessions.resolveFetch(session, moduleId);
     const stored = this.sessions.load(entry.owner, entry.platform);
-    if (!stored) return { account_raw: '', display_name: '', connected_at: null };
+    const cookies = entry.cookies;
     let userId = '';
-    try { const raw = stored.cookies.find((c) => c.name === 'CASLOGC')?.value; if (raw) userId = String(JSON.parse(decodeURIComponent(raw)).userId ?? ''); } catch { /* 其他平台不需要此身份字段。 */ }
+    try { const raw = cookies.find((c) => c.name === 'CASLOGC')?.value; if (raw) userId = String(JSON.parse(decodeURIComponent(raw)).userId ?? ''); } catch { /* 其他平台使用公开数字身份字段。 */ }
+    const numeric = (names: string[]) => cookies.find((c) => names.includes(c.name) && /^\d{1,30}$/.test(c.value))?.value ?? '';
+    userId ||= numeric(['_uid', 'UID']);
     return {
-      account_raw: stored.account_raw,
-      display_name: stored.display_name,
-      connected_at: stored.connected_at,
+      account_raw: stored?.account_raw ?? '',
+      display_name: stored?.display_name ?? '',
+      connected_at: stored?.connected_at ?? null,
       user_id: userId,
+      organization_id: numeric(['fid']),
     };
   }
 

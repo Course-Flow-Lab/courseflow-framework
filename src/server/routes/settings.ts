@@ -3,12 +3,13 @@ import type { ServerContext } from '../context.ts';
 import { preferences, savePreferences, type Preferences } from '../../core/preferences.ts';
 import type { ModelInput } from '../../services/ai.ts';
 import { badRequest, forbidden } from '../../core/errors.ts';
+import { legacySummary } from './legacy.ts';
 
 export function registerSettingsRoutes(app: FastifyInstance, c: ServerContext): void {
   const { requireIdentity } = c.access;
   app.get('/api/settings', async (request) => {
     const who = requireIdentity(request);
-    return { preferences: preferences(c.db, who.user.id), models: c.ai.list(who.user.id), browser: { available: c.browser.available() } };
+    return { preferences: preferences(c.db, who.user.id), models: c.ai.list(who.user.id), browser: { available: c.browser.available() }, legacy: legacySummary(c, who.user.id) };
   });
   app.post<{ Body: Partial<Preferences> }>('/api/settings/preferences', async (request) => {
     const who = requireIdentity(request, { write: true });

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { loadConfig, bindAddress } from './core/config.ts';
 import { configureProxy } from './core/network.ts';
 import { createRuntime, VERSION } from './runtime.ts';
+import { importStudia } from './core/studia-import.ts';
 
 const HELP = `Courseflow framework ${VERSION}
 
@@ -15,6 +16,7 @@ const HELP = `Courseflow framework ${VERSION}
   courseflow module remove <id>            卸载模块
   courseflow module config <id> <json>     设置模块配置并重启
   courseflow doctor                        打印数据目录与配置
+  courseflow migrate studia --source <旧目录> --destination <全新目录> [--key-file <旧密钥>] [--dry-run]
 
 配置（环境变量）：
   CF_BIND         127.0.0.1:8099
@@ -28,6 +30,14 @@ async function main(): Promise<void> {
   configureProxy();
   const argv = process.argv.slice(2);
   const command = argv[0] ?? 'serve';
+  if (command === 'migrate') {
+    if (argv[1] !== 'studia') throw new Error('迁移来源目前仅支持 studia');
+    const argument = (name: string) => { const index = argv.indexOf(name); return index < 0 ? undefined : argv[index + 1]; };
+    const source = argument('--source'), destination = argument('--destination');
+    if (!source || !destination) throw new Error('请显式指定 --source 和 --destination，目标必须是全新目录');
+    console.log(JSON.stringify(await importStudia({ source, destination, keyFile: argument('--key-file'), username: argument('--username'), passwordFile: argument('--password-file'), legacyOwner: argument('--legacy-owner'), dryRun: argv.includes('--dry-run') }), null, 2));
+    return;
+  }
   if (command === '--help' || command === '-h' || command === 'help') {
     console.log(HELP);
     return;

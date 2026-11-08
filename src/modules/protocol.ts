@@ -36,6 +36,7 @@ export type Manifest = {
     network: string[];
     browser: boolean;
     ai: boolean;
+    question_bank?: boolean;
     storage: 'module';
   };
 };
@@ -263,6 +264,7 @@ export function validateManifest(raw: unknown): Manifest {
       network,
       browser: permissions.browser === true,
       ai: permissions.ai === true,
+      question_bank: permissions.question_bank === true,
       storage: 'module',
     },
   };
