@@ -385,7 +385,7 @@ blockquote { margin: 14px 0; padding: 12px 16px; background: var(--well); border
   .selection-toolbar { flex-wrap: wrap; }
 }
 
-/* 问答互动：沿用 Studia 的双栏计分、草稿和发布记录布局。 */
+/* 问答互动：双栏计分、草稿和发布记录布局。 */
 .qa-workspace { max-width: 980px; }
 .qa-board { overflow: hidden; padding: 0; }
 .qa-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 24px; }
