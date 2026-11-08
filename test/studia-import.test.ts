@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createCipheriv, pbkdf2Sync } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { execFileSync } from 'node:child_process';
 import { importStudia, studiaArchive } from '../src/core/studia-import.ts';
 import { Db } from '../src/core/db.ts';
 import { Vault } from '../src/core/vault.ts';
@@ -42,6 +43,8 @@ test('Studia 只读预检不写目标，AES-GCM 16 字节随机数可导入，�
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'courseflow-studia-import-')); t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const source=fixture(root), destination=path.join(root,'new');
   const sourceHash=digest(fs.readFileSync(path.join(source,'studia.db')).toString('base64'));
+  const cli=JSON.parse(execFileSync(process.execPath,['src/main.ts','migrate','legacy','--source',source,'--destination',destination,'--dry-run'],{encoding:'utf8',env:{...process.env,CF_HTTP_PROXY:''}}));
+  assert.equal(cli.dry_run,true);assert.equal(cli.users,2);assert.ok(!fs.existsSync(destination));
   const plan=await importStudia({source,destination,dryRun:true}); assert.equal(plan.users,2); assert.equal(plan.archived_files,2); assert.ok(!fs.existsSync(destination));
   const report=await importStudia({source,destination}); assert.equal(report.users,2); assert.equal('personal_models' in report && report.personal_models,1);
   const db=new Db(path.join(destination,'courseflow.db')); t.after(()=>db.close()); const vault=Vault.open(path.join(destination,'secret.key'),true);

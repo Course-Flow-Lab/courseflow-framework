@@ -84,7 +84,7 @@ export async function importStudia(options: ImportOptions) {
   const keyPath = options.keyFile ?? path.join(source, 'secret.key');
   const keyRaw = fs.existsSync(keyPath) ? read(keyPath) : undefined;
   const key = keyRaw ? Buffer.from(keyRaw.toString('utf8').trim(), 'base64url') : undefined;
-  if (key && key.length !== 32) throw new Error('旧主密钥格式不正确，应为 Studia 的 32 字节 base64url 密钥');
+  if (key && key.length !== 32) throw new Error('旧主密钥格式不正确，应为旧站点的 32 字节 base64url 密钥');
   const database = path.join(source, 'studia.db');
   let users: LegacyUser[];
   let sharedAnswers: Record<string, unknown> = {};
