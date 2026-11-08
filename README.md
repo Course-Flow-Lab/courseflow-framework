@@ -10,6 +10,9 @@ Courseflow 是基于 Node.js 的课程工作台，也是平台模块的宿主。
 | --- | --- |
 | 本仓库 | 宿主、网页界面、模块 API 规范 |
 | [courseflow-zhs](https://github.com/Course-Flow-Lab/courseflow-zhs) | 智慧树模块。作为外部示例，模块定义、安装命令和平台能力都在它的 README |
+| [courseflow-chaoxing](https://github.com/Course-Flow-Lab/courseflow-chaoxing) | 超星独立模块，以旧 chaoxing 为基线并保留 Studia 修正 |
+| [courseflow-question-bank](https://github.com/Course-Flow-Lab/courseflow-question-bank) | 平台无关的题库、正确／错误答案记忆和外部数据源接口 |
+| [Studia 数据迁移](docs/STUDIA-MIGRATION.md) | 只读预检、全新目录导入及历史档案范围 |
 | [模块 API v1](spec/module-api-v1.md) | 清单、RPC、宿主服务、公共数据类型与错误的完整定义 |
 | [`modules/simulator`](modules/simulator) | 无网络的 Node.js 参考模块，测试也用它 |
 
@@ -108,6 +111,7 @@ npm test
 | `cw.net.fetch` | 唯一的出网通道。宿主注入会话 Cookie／令牌、执行网络白名单、拒绝模块设置 Cookie／Host、限制重定向、按用户的夜间暂停设置限制非只读阶段，并按 `commit` 记录请求台账 |
 | `cw.state` | 按模块、用户、命名空间和键隔离的加密键值存储；`cw.state.get`、`cw.state.set` 是显式别名 |
 | `cw.session.identity` | 框架在登录完成时保存的平台身份，不是 Cookie 或令牌 |
+| `cw.question_bank.lookup`／`cw.question_bank.record` | 需声明 `question_bank: true`；按当前会话所属用户、平台和课程加密隔离 |
 | `cw.ai.generate` | 用站点用户选中的模型生成文本；需要清单 `ai: true`，模块拿不到密钥 |
 | `cw.browser.*` | 官方页面的打开、脚本求值和关闭；页面绑定用户、平台与任务代次，需要 `browser: true` |
 | `cw.peers.*` | 站内同课程互助的已确认发布编号；双方都开启才可读 |
@@ -131,7 +135,7 @@ npm test
 
 ```
 安装 → 校验清单（moduleApi、版本范围、权限、路径）
-     → 复制清单、入口与 runtime.files，固定 sha256 并写入 modules.lock.json
+     → 复制清单、入口与 runtime.files，固定 sha256 并写入数据库安装记录
 启用 → 启动子进程 → platform.describe（5 秒）→ 就绪，调用按 30 秒限时
 崩溃 → 退避重启；连续失败后保持不可用，等待管理员处理
 停用 → SIGTERM，5 秒后 SIGKILL
@@ -152,13 +156,13 @@ npm run cli -- doctor
 ```
 
 - 目录安装只复制清单、`runtime.entry` 和 `runtime.files`，构建目录（`target/`、`node_modules/`）不会进入数据目录；npm 格式 `.tgz` 使用 `package/` 根目录。
-- 安装后内容指纹写入数据库与 `modules.lock.json`，启动时复核。管理员也可以在网页安装入口填写服务器上的路径。
+- 安装后内容指纹写入数据库的模块安装记录，启动时复核。管理员也可以在网页安装入口填写服务器上的路径。
 - CLI 与服务必须使用同一个 `CF_DATA_DIR`；不要同时运行两个使用相同数据目录的服务。
 - 模块配置整体替换，传 `{}` 即恢复默认值。配置语义属于模块，框架只保存并原样下发。
 
 ### 信任边界
 
-- 网络白名单由宿主在每次请求和每次跳转前检查；北京时间 23:00–07:00 拒绝所有非只读阶段，模块无法绕过。
+- 网络白名单由宿主在每次请求和每次跳转前检查；启用夜间暂停的用户在北京时间 23:00–07:00 不能执行非只读阶段，模块无法绕过。
 - Node 引擎在权限模型下运行（默认无 `--allow-net`、无子进程）。`binary` 引擎作为可信进程直接运行，协议权限不是操作系统沙箱；浏览器脚本同属可信模块代码。
 - 模块看不到平台凭据、模型密钥和其他平台的会话，也不能读写数据库；它能看到的是宿主下发的会话句柄和请求响应体。
 - 目前没有模块签名，也没有网页上传安装包：只支持目录与 `.tgz` 路径安装，安装即可信。
@@ -239,4 +243,4 @@ modules/simulator/               无网络的 Node.js 参考模块
 
 离线测试覆盖模块协议、加密、任务恢复与互斥、人工补答、交卷确认、未知结果防重发、模型接口和参考模块的 fixture 链路。它们不能证明某个真实平台的所有接口都可用；平台验收必须在模块自己的仓库和真实账号上完成。
 
-功能可运行、测试通过和真实平台验收是三种状态，不能互相替代。框架不提供模块签名、网页上传安装包、操作系统级沙箱或旧平台数据迁移；新部署使用独立数据目录。
+功能可运行、测试通过和真实平台验收是三种状态，不能互相替代。框架不提供模块签名、网页上传安装包、操作系统级沙箱。0.1.5 提供 Studia 导入工具，仅写入全新数据目录；旧平台会话需要重新连接，历史任务只读封存，不自动恢复执行。

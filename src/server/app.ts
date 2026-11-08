@@ -14,6 +14,7 @@ import { registerSettingsRoutes } from './routes/settings.ts';
 import { registerFeaturesRoutes } from './routes/features.ts';
 import { registerLogsRoutes } from './routes/logs.ts';
 import { registerRegistrationRoutes } from './routes/registration.ts';
+import { registerLegacyRoutes } from './routes/legacy.ts';
 
 export function createApp(services: ServerServices): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 1_048_576, trustProxy: false });
@@ -52,6 +53,7 @@ export function createApp(services: ServerServices): FastifyInstance {
   registerSystemRoutes(app, context);
   registerAuthRoutes(app, context);
   registerRegistrationRoutes(app, context);
+  registerLegacyRoutes(app, context);
   registerPlatformsRoutes(app, context);
   registerTasksRoutes(app, context);
   registerModulesRoutes(app, context);

@@ -1,6 +1,6 @@
 # Courseflow 模块 API v1
 
-本文描述框架与独立平台模块之间的实际协议。当前框架 `0.1.3` 仅支持 `moduleApi: 1`。新增可选方法使用框架版本范围控制兼容性，不承诺尚未实现的上一代主版本兼容。
+本文描述框架与独立平台模块之间的实际协议。当前框架 `0.1.5` 仅支持 `moduleApi: 1`。新增可选方法使用框架版本范围控制兼容性，不承诺尚未实现的上一代主版本兼容。
 
 模块是常驻子进程，stdin／stdout 使用 UTF-8、每行一个 JSON 对象的 JSON-RPC 2.0。`error.code` 使用稳定字符串；通知没有 `id`。stdout 只能输出协议，日志写 stderr。模块的网络、状态、模型和浏览器操作经宿主服务调用。
 
@@ -45,7 +45,7 @@
 - `when` 由框架判断，仅支持 `course.kind`、`course.family` 的字符串相等；未知条件拒绝安装。
 - 可选 `keepalive_seconds` 为不小于 60 的整数。宿主定期对已连接用户调用 `auth.keepalive`，模块应仅刷新登录状态，不发学习写入。
 
-目录安装仅复制清单、入口和 `runtime.files`。npm 格式 `.tgz` 使用 `package/` 根目录。框架固定声明文件的 sha256，保存至数据库和 `modules.lock.json`，启动时复核内容。
+目录安装仅复制清单、入口和 `runtime.files`。npm 格式 `.tgz` 使用 `package/` 根目录。框架固定声明文件的 sha256，保存至数据库的模块安装记录，启动时复核内容。
 
 Node.js 使用权限模型限制文件、网络和子进程。二进制直接作为可信进程运行，协议权限不是操作系统沙箱；不能据此承诺恶意二进制无法读取主机文件。浏览器脚本同样属于可信模块代码。
 
@@ -120,6 +120,8 @@ Node.js 使用权限模型限制文件、网络和子进程。二进制直接作
 
 通用选项包括 `operation:study/trial/review`、`speedup`、`max_speed`、`execution_id`、`limit_seconds`、`review_seconds`、`interaction_answers`。速度默认 1，显式允许时最高 1.5；复习固定 1。真实平台的 `completed` 必须以回读或可核验状态为依据；fixture 可返回明确标记的离线证据。
 
+框架 0.1.5 起，`catalog.courses`、`catalog.units`、`catalog.papers` 可返回 `next_cursor`。宿主在下一次调用附带 `cursor`，按顺序合并同名数组；省略或返回 `null` 表示结束。每次调用仍须三十秒内完成，不分页的现有模块无需修改。单次聚合最多两千页、两万项，游标序列化最多 8192 字节；重复游标停止并报错，每页请求前重新检查会话。
+
 ### 试卷与作答扩展
 
 | 方法 | 关键参数 | 结果 |
@@ -193,11 +195,26 @@ Node.js 使用权限模型限制文件、网络和子进程。二进制直接作
 
 作用域为模块、站点用户、命名空间及键，内容加密存储。存在 `value` 表示写入。`cw.state.get` 和 `cw.state.set` 为显式别名。原生平台记录和签名参数放在此处，不泄漏到公共 DTO。
 
+### 题库宿主服务（框架 ≥ 0.1.5）
+
+清单可选 `permissions.question_bank`，默认 `false`。声明后，完成登录的模块可以使用以下服务：
+
+| 方法 | 参数／结果 |
+| --- | --- |
+| `cw.question_bank.lookup` | `{session,course,question,course_kind?}` → `{correct:string[]或null,wrong:string[][],updated_at:number或null}` |
+| `cw.question_bank.record` | `{session,course,question,answer,evidence}` → `{ok:true}` |
+
+`course` 建议使用 `课程编号/班级编号`；`question` 使用公共题目类型的题干、题型、选项、图片和空数。`evidence` 为 `{result:"correct"或"incorrect",source:"platform"或"reviewed",at?:Unix秒}`；模型或外部题库候选不能作为已确认记录写入。`course_kind` 仅辅助旧 Studia 智慧树指纹兼容，当前支持 `shared`、`smart`。
+
+所属用户及平台从会话获取，传入 `owner` 不会改变作用域，未完成登录的挑战句柄不可使用题库。内容由宿主加密，选项改编号或顺序后按完整文字映射，重复文字拒绝复用，错误组合会撤销相同的旧正确记录。接口与外部适配器定义在独立 [courseflow-question-bank](https://github.com/Course-Flow-Lab/courseflow-question-bank) 仓库。
+
+`cw.session.identity` 在登录挑战期间也可返回宿主已收到的公开身份：数值型 `_uid`／`UID` 对应 `user_id`，数值型 `fid` 对应 `organization_id`。不会返回原 Cookie、令牌或其他用户身份；完成连接前 `account_raw` 可以为空。
+
 ### 其他宿主服务
 
 | 服务 | 参数与结果 |
 | --- | --- |
-| `cw.session.identity` | `{session}` → `{account_raw,display_name,connected_at,user_id?}`，不含 Cookie 或令牌 |
+| `cw.session.identity` | `{session}` → `{account_raw,display_name,connected_at,user_id?,organization_id?}`，不含 Cookie 或令牌 |
 | `cw.clock.now` | `{}` → `{now}`，Unix 秒 |
 | `cw.log` | 通知：`{level,message,fields?}`，不得含凭据 |
 | `cw.ai.generate` | `{session,prompt}` → `{text}`；需要清单 `ai:true`，使用该用户选中的模型 |

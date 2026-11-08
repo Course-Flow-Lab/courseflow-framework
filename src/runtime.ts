@@ -66,10 +66,10 @@ export async function createRuntime(
     const ai = new AiService(db, vault);
     const memory = new AnswerMemory(db, vault);
     const browser = new BrowserService(config.dataDir);
-    const manager = new ModuleManager({ db, vault, sessions, modulesDir: config.modulesDir, log, ai, browser });
+    const manager = new ModuleManager({ db, vault, sessions, modulesDir: config.modulesDir, log, ai, browser, memory });
     const jobs = new JobEngine({ db, vault, manager, log, ai, memory, recoverInterrupted: options.recoverTasks });
     const setupCode = options.setupCode ?? randomToken().slice(0, 32);
-    const app = createApp({ config, db, manager, jobs, setupCode, log, ai, memory, browser, logs });
+    const app = createApp({ config, db, vault, manager, jobs, setupCode, log, ai, memory, browser, logs });
     log('info', `Courseflow ${VERSION} 运行时已就绪`);
     let closing: Promise<void> | undefined;
     return {

@@ -159,7 +159,7 @@ async function answer(c: WorkflowContext) {
       state.answers = {}; state.explanations = {}; state.preserve = []; state.cursor = 0; state.confirmed = false; state.phase = 'answers';
       for (const q of state.attempt!.questions) {
         if (validAnswer(q, q.answer)) { state.answers[q.id] = q.answer; state.preserve.push(q.id); }
-        else { const known = c.memory.get(c.task.owner, c.task.platform, courseKey, q); if (known) state.answers[q.id] = known; }
+        else { const known = c.memory.get(c.task.owner, c.task.platform, courseKey, q, c.course.kind); if (known) state.answers[q.id] = known; }
       }
       save();
     return true;
