@@ -33,6 +33,7 @@
     "network": ["example.com", "*.example.com"],
     "browser": false,
     "ai": true,
+    "asr": false,
     "storage": "module"
   }
 }
@@ -227,6 +228,7 @@ Node.js 使用权限模型限制文件、网络和子进程。二进制直接作
 | `cw.clock.now` | `{}` → `{now}`，Unix 秒 |
 | `cw.log` | 通知：`{level,message,fields?}`，不得含凭据 |
 | `cw.ai.generate` | `{session,prompt}` → `{text}`；需要清单 `ai:true`，使用该用户选中的模型 |
+| `cw.asr.transcribe` | `{session,audio,mime?}` → `{text}`；`audio` 为 Base64，需要清单 `asr:true`，由宿主调用配置的转写后端 |
 | `cw.browser.open` | `{session,url,purpose?,observe_urls?}` → `{page}`；需要 `browser:true` |
 | `cw.browser.evaluate` | `{session,page,expression,stage}` → JSON 可序列化的脚本结果 |
 | `cw.browser.close` | `{session,page}` → `{}` |
