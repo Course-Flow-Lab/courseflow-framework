@@ -3,7 +3,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRuntime, type Runtime } from '../../src/runtime.ts';
-import type { Config } from '../../src/core/config.ts';
+import { createHttpServer } from '../../src/server/app.ts';
+import type { FastifyInstance } from 'fastify';
+import type { Config, HttpConfig } from '../../src/core/config.ts';
+
+export type HttpRuntime = Runtime & { app: FastifyInstance };
+
+export function withHttp(runtime: Runtime, config: HttpConfig): HttpRuntime {
+  const app = createHttpServer(runtime, { ...config, setupCode: 'test-setup-code' });
+  let closing: Promise<void> | undefined;
+  return { ...runtime, app, close: () => closing ??= (async () => {
+    try { await app.close(); } finally { await runtime.close(); }
+  })() };
+}
 
 export type Session = { token: string; csrf: string };
 
@@ -22,16 +34,16 @@ export function configFor(dir: string): Config {
   };
 }
 
-export async function boot(prefix = 'courseflow-test-'): Promise<{ runtime: Runtime; dir: string }> {
+export async function boot(prefix = 'courseflow-test-'): Promise<{ runtime: HttpRuntime; dir: string }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const config = configFor(dir);
   fs.mkdirSync(config.modulesDir, { recursive: true });
-  const runtime = await createRuntime(config, { setupCode: 'test-setup-code' });
+  const runtime = withHttp(await createRuntime(config), config);
   return { runtime, dir };
 }
 
 export async function call(
-  runtime: Runtime,
+  runtime: HttpRuntime,
   options: { method?: string; url: string; session?: Session; body?: unknown },
 ): Promise<Reply> {
   const headers: Record<string, string> = {};
@@ -59,7 +71,7 @@ export function tokenFrom(setCookie: string | undefined): string {
   return match[1]!;
 }
 
-export async function setupAdmin(runtime: Runtime): Promise<Session> {
+export async function setupAdmin(runtime: HttpRuntime): Promise<Session> {
   const reply = await call(runtime, {
     method: 'POST',
     url: '/api/auth/setup',
@@ -70,7 +82,7 @@ export async function setupAdmin(runtime: Runtime): Promise<Session> {
 }
 
 export async function waitFor(
-  runtime: Runtime,
+  runtime: HttpRuntime,
   session: Session,
   taskId: string,
   state: string,

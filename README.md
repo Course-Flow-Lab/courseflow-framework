@@ -1,14 +1,16 @@
 # Courseflow 框架
 
-Courseflow 是基于 Node.js 的课程工作台，也是平台模块的宿主。站点账号、平台会话、任务调度、模型调用、加密存储和网页界面由框架统一管理；每个平台是一个独立模块，可用任意语言实现，通过标准输入输出的 NDJSON JSON-RPC 与框架通信。
+Courseflow Framework 是基于 Node.js 的后端运行时和平台模块宿主，提供站点账号、平台会话、任务调度、模型调用、加密存储、内置题库及 HTTP API。每个平台是一个独立模块，可用任意语言实现，通过标准输入输出的 NDJSON JSON-RPC 与框架通信。
 
-模块不访问网络、不接触 Cookie 或密钥、不读写数据库：框架替它发请求、保存状态、计时并调度任务。平台协议因此可以各自独立演进，而调度、加密、审计和界面只需要实现一次。框架本身不包含任何平台的协议代码。
+模块不访问网络、不接触 Cookie 或密钥、不读写数据库：框架替它发请求、保存状态、计时并调度任务。平台协议因此可以各自独立演进，而调度、加密和审计只需要实现一次。框架本身不包含任何平台的协议代码。
 
-界面提供平台侧栏、课程卡片、分章目录、课程功能页、任务详情、底部任务栏、深浅主题和移动导航。平台模块独立安装，不依赖其他站点进程。
+网页界面独立维护在 [courseflow-webui](https://github.com/Course-Flow-Lab/courseflow-webui)。框架不提供 HTML、CSS 或前端构建产物，可单独运行，也可由未来 App 装配。平台模块独立安装，不依赖网页或其他站点进程。
 
 | 仓库或文档 | 内容 |
 | --- | --- |
-| 本仓库 | 宿主、网页界面、模块 API 规范 |
+| 本仓库 | 后端运行时、HTTP API 与模块 API 规范 |
+| [courseflow-webui](https://github.com/Course-Flow-Lab/courseflow-webui) | 独立网页工作台，原生 JavaScript 与 Vite |
+| [Web API 与嵌入方式](docs/WEB-API.md) | 同源部署、接口版本、会话和后端装配 |
 | [courseflow-zhs](https://github.com/Course-Flow-Lab/courseflow-zhs) | 智慧树模块。作为外部示例，模块定义、安装命令和平台能力都在它的 README |
 | [courseflow-chaoxing](https://github.com/Course-Flow-Lab/courseflow-chaoxing) | 超星独立模块，以旧 chaoxing 为基线并保留既有协议修正 |
 | [内置题库](src/question-bank/README.md) | 框架内统一题库、已确认答案记忆及模块公共接口，无独立运行依赖 |
@@ -23,21 +25,20 @@ Courseflow 是基于 Node.js 的课程工作台，也是平台模块的宿主。
 ```sh
 npm ci
 npm start
-# 默认地址：http://127.0.0.1:8099
+# 默认 API 地址：http://127.0.0.1:8099/healthz；根路径不再提供网页
 ```
 
-首次启动在终端打印一次性管理员设置码；在网页创建站点管理员。站点账号与平台账号分别管理，平台账号只能通过模块声明的登录方式连接。
+首次启动在终端打印一次性管理员设置码；启动独立 WebUI 后在网页创建站点管理员。站点账号与平台账号分别管理，平台账号只能通过模块声明的登录方式连接。
 
 管理员创建完成后，新成员可在登录页点击「注册账号」。默认需要邀请码，管理员可在「注册与邀请」生成邀请码或关闭邀请码要求。
 
 ```sh
 npm run dev        # 监视模式
 npm run typecheck
-npm run check:web
 npm test
 ```
 
-网页没有构建步骤，服务器直接提供 `web/` 中明确列出的资源。`argon2` 有原生依赖，安装时需要允许正常的安装脚本。
+前端在独立仓库执行 `npm ci`、`npm run dev` 或 `npm run build`，后端不需要前端仓库才能启动。联调时后端使用 `CF_BIND=127.0.0.1:8102 CF_PUBLIC_URL=http://127.0.0.1:5173`，并设置源码外的独立 `CF_DATA_DIR`；WebUI 默认将请求代理至该端口。`argon2` 有原生依赖，安装时需要允许正常的安装脚本。
 
 | 环境变量 | 默认值 | 用途 |
 | --- | --- | --- |
@@ -230,13 +231,12 @@ npm run cli -- doctor
 
 ```text
 src/
-  main.ts、runtime.ts、version.ts  入口、装配与版本
+  main.ts、index.ts、runtime.ts    命令行、库入口和后端运行时
   core/                          账号、配置、数据库、加密、会话、偏好
   modules/                       模块安装、协议、进程、HTTP 与宿主服务
   jobs/                          调度、学习、复习、作答与活动编排
   services/                      模型、答题记忆、官方浏览器、报告导出
   server/routes/                 认证、平台、模块、任务、设置和课程功能 API
-web/                             无构建步骤的网页资源
 spec/module-api-v1.md             模块协议与宿主服务定义
 docs/                            架构与本机部署说明
 test/                            离线单元与集成测试

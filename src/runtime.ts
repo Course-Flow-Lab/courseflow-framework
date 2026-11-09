@@ -1,12 +1,11 @@
-import type { FastifyInstance } from 'fastify';
-import type { Config } from './core/config.ts';
+import type { RuntimeConfig } from './core/config.ts';
+import fs from 'node:fs';
 import { Db } from './core/db.ts';
 import { Vault } from './core/vault.ts';
 import { Sessions } from './core/sessions.ts';
-import { randomToken, setQuietOverride } from './core/domain.ts';
-import { ModuleManager } from './modules/manager.ts';
+import { setQuietOverride } from './core/domain.ts';
+import { ModuleManager, type Logger } from './modules/manager.ts';
 import { JobEngine } from './jobs/engine.ts';
-import { createApp } from './server/app.ts';
 import { FRAMEWORK_VERSION } from './version.ts';
 import { AiService } from './services/ai.ts';
 import { AnswerMemory } from './services/answers.ts';
@@ -19,7 +18,7 @@ export const VERSION = FRAMEWORK_VERSION;
 export { FRAMEWORK_VERSION };
 
 export type Runtime = {
-  config: Config;
+  config: RuntimeConfig;
   db: Db;
   vault: Vault;
   sessions: Sessions;
@@ -30,8 +29,7 @@ export type Runtime = {
   questionBank: QuestionBankService;
   browser: BrowserService;
   logs: LogStore;
-  app: FastifyInstance;
-  setupCode: string;
+  log: Logger;
   close: () => Promise<void>;
 };
 
@@ -49,12 +47,13 @@ function makeLogger(threshold: Level, logs: LogStore) {
   };
 }
 
-/** Composition root shared by the CLI, HTTP server and integration tests. */
+/** 后端运行时；HTTP、监听端口和进程信号由调用方管理。 */
 export async function createRuntime(
-  config: Config,
-  options: { setupCode?: string; logLevel?: Level; recoverTasks?: boolean } = {},
+  config: RuntimeConfig,
+  options: { logLevel?: Level; recoverTasks?: boolean } = {},
 ): Promise<Runtime> {
   configureProxy();
+  fs.mkdirSync(config.modulesDir, { recursive: true, mode: 0o700 });
   const logs = new LogStore(config.dataDir);
   const log = makeLogger((options.logLevel ?? config.logLevel ?? 'info') as Level, logs);
   setQuietOverride(Number.isFinite(config.quietOverrideUntil) ? config.quietOverrideUntil : null);
@@ -70,18 +69,16 @@ export async function createRuntime(
     const browser = new BrowserService(config.dataDir);
     const manager = new ModuleManager({ db, vault, sessions, modulesDir: config.modulesDir, log, ai, browser, memory });
     const jobs = new JobEngine({ db, vault, manager, log, ai, memory, recoverInterrupted: options.recoverTasks });
-    const setupCode = options.setupCode ?? randomToken().slice(0, 32);
-    const app = createApp({ config, db, vault, manager, jobs, setupCode, log, ai, memory, browser, logs });
     log('info', `Courseflow ${VERSION} 运行时已就绪`);
     let closing: Promise<void> | undefined;
     return {
-      config, db, vault, sessions, manager, jobs, app, setupCode, ai, memory, questionBank: memory, browser, logs,
+      config, db, vault, sessions, manager, jobs, log, ai, memory, questionBank: memory, browser, logs,
       close: () => closing ??= (async () => {
-        await app.close();
-        await jobs.shutdown();
-        await manager.stopAll();
-        await browser.shutdown();
-        db.close();
+        const errors: unknown[] = [];
+        for (const close of [() => jobs.shutdown(), () => manager.stopAll(), () => browser.shutdown(), () => db.close()]) {
+          try { await close(); } catch (error) { errors.push(error); }
+        }
+        if (errors.length) throw new AggregateError(errors, '后端运行时未能完全关闭');
       })(),
     };
   } catch (error) {

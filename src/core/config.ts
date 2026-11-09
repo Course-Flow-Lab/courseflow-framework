@@ -2,9 +2,12 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export type Config = {
+export type HttpConfig = {
   bind: string;
   publicUrl: string;
+};
+
+export type RuntimeConfig = {
   dataDir: string;
   dbPath: string;
   keyPath: string;
@@ -12,6 +15,8 @@ export type Config = {
   logLevel: string;
   quietOverrideUntil: number | null;
 };
+
+export type Config = RuntimeConfig & HttpConfig;
 
 function defaultDataDir(): string {
   if (process.env.XDG_DATA_HOME) return path.join(process.env.XDG_DATA_HOME, 'courseflow');

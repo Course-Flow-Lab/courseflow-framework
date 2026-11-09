@@ -1,37 +1,35 @@
-# 本机独立部署与真实账号验收
+# 本机独立部署与账号验收
 
-本次目标是 localhost 上的独立 Courseflow 服务。现有站点和旧测试进程保持运行；不导入其账号、数据库或密钥。8099 已被现有进程使用，新服务使用 **http://127.0.0.1:8100**。
+0.1.7 起前后端分别发布，用户入口仍为 **http://127.0.0.1:8100**。Nginx 提供 WebUI 静态资源，并原样转发 `/api/` 与 `/healthz` 至 `127.0.0.1:8101`。Framework 不依赖 Nginx 或前端构建工具。
 
 ## 目录与服务
 
-- 程序版本：`~/.local/share/courseflow-local/releases/`，以版本及提交编号保存。
-- 当前版本链接：`~/.local/share/courseflow-local/current`。
-- 独立数据：`~/.local/share/courseflow-local/data/`。
-- 运行及操作日志：独立数据下的 `logs/`，通过网页「日志导出」下载；已有任务事件可在任务详情导出。
-- 用户级服务：`~/.config/systemd/user/courseflow-local.service`。
-- 首次设置码：在用户服务日志查看；部署时也会写入源码外、仅本人可读的 `~/.local/share/courseflow-local/admin-setup.txt`。
+- 后端发布：`~/.local/share/courseflow-local/releases/`；`current` 指向当前版本。
+- 前端发布：`~/.local/share/courseflow-local/webui-releases/`；`webui-current` 指向当前版本。
+- 数据与主密钥：`~/.local/share/courseflow-local/data/`，前后端拆分不改变数据库版本 3。
+- 后端服务：`courseflow-local.service`，设置 `CF_BIND=127.0.0.1:8101`、`CF_PUBLIC_URL=http://127.0.0.1:8100`，保留原 `CF_DATA_DIR`。
+- 网关服务：`courseflow-webui-local.service`，使用 WebUI 仓库的 `deploy/nginx.conf`。独立前缀目录下的 `html` 链接指向 `webui-current/dist`，不修改系统 Nginx 配置。
+- 日志仍写入私有数据目录，可从界面「日志导出」下载；首次设置码只在后端终端或用户服务日志中显示。
 
 ```sh
-systemctl --user status courseflow-local
-systemctl --user restart courseflow-local
-systemctl --user stop courseflow-local
-systemctl --user start courseflow-local
-journalctl --user -u courseflow-local -n 50 --no-pager
+systemctl --user status courseflow-local courseflow-webui-local
+journalctl --user -u courseflow-local -u courseflow-webui-local -n 50 --no-pager
 ```
 
-用户级服务随用户会话启动。是否退出登录后继续运行取决于主机的用户管理器配置；本次不修改系统级 linger 设置。
+## 构建、更新与回退
 
-## 构建与更新
+1. 后端执行 `npm ci`、`npm run typecheck`、`npm test`。智慧树与超星契约测试只启用 fixture；Python 环境通过 `CF_CX_PYTHON` 指定。平台模块本轮不升级。
+2. WebUI 执行 `npm ci`、`npm run check`、`npm test`、`npm run build`。分别记录前后端提交编号及文件摘要。
+3. 将已提交后端代码导出至新的版本目录，执行 `npm ci --omit=dev`；将前端构建产物放入独立版本目录。不要把数据目录或开发服务器放入发布包。
+4. 用临时数据和模拟模块验收同源代理，包括 Cookie、CSRF、带 `%2F` 的课程标识、题图及导出；执行 `nginx -t -p <独立前缀>/ -c <配置绝对路径>`。API 代理不添加 URI 后缀，长请求超时配置为 300 秒。
+5. 停止网关及后端，备份数据库、主密钥、模块目录、服务配置、版本链接和发布记录。切换前后端版本链接，启动后端并确认 `web_api_version: 1`，再启动网关。
+6. 检查入口、构建资源、`/version.json`、`/healthz`、`/api/bootstrap`、匿名权限边界和既有数据摘要。部署检查不登录真实平台、不执行真实账号任务。
 
-1. 取得智慧树模块仓库（`git clone https://github.com/Course-Flow-Lab/courseflow-zhs.git ../courseflow-zhs`，已有检出则跳过），再运行 `cargo +stable test --locked` 和 `cargo +stable build --release --locked`。
-2. 在框架仓库运行 `npm ci`、`npm run typecheck`、`npm run check:web` 和 `npm test`。Rust release 存在时，测试包含真实子进程的 fixture 契约链路。
-3. 将已提交框架代码导出至新的 release 目录，使用 `npm ci --omit=dev` 安装运行依赖。
-4. 停止当前 Courseflow 独立服务，备份数据库、`secret.key`、模块安装记录和发布记录；再使用同一 `CF_DATA_DIR` 安装智慧树 release 模块，确认保留 `{"source":"live"}`。不要安装 simulator，也不要复制测试数据库。
-5. 切换 `current` 链接，启动并检查 `/healthz`、首次设置状态和匿名访问边界。模块版本变化时，旧任务会要求核对版本；保留旧任务记录，使用新版本创建测试任务。
+0.1.7 的拆分不迁移数据库，不更换账号、站点会话、模块配置或主密钥。不能并发启动两个使用同一数据目录的后端。网关与后端必须配套设置公开 URL；保持原请求的 Origin 和 Cookie，不添加跨域放行规则。
 
-操作模块 CLI 时使用与服务相同的数据目录。不要同时运行两个使用相同数据目录的 HTTP 服务。升级后模块内容指纹应与发布记录一致。
+失败时停止新服务，恢复旧版本链接和服务配置；如果回退到 0.1.6 一体服务，由旧后端重新占用 8100，停用新增网关。仅在数据库确有变更且已核对新增数据时恢复数据库备份，主密钥必须与数据库配套。部署程序和数据备份均保存在源码目录外。
 
-回退程序前必须核对数据库版本。框架 0.1.4 将数据库从版本 2 原地升级至版本 3，新增注册设置与邀请码表，保留已有账号、任务及平台状态；旧版框架不能直接打开版本 3。需要回退时，必须同时恢复升级前的数据库备份与对应 `secret.key`，并核对期间新增数据。备份同时保存数据库与 `secret.key`，并保留原安装模块。
+用户级服务随用户会话启动；不修改系统级 linger 设置。历史版本 0.1.4 曾将数据库从版本 2 升级至 3，不能用更旧程序直接读取版本 3。
 
 ## 0.1.6 更新
 

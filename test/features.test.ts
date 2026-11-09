@@ -9,9 +9,9 @@ import { nowSeconds, setQuietOverride } from '../src/core/domain.ts';
 import { parseModelAnswer } from '../src/services/answers.ts';
 import { exportReport } from '../src/services/exports.ts';
 import { boot, call, setupAdmin, waitFor, type Session } from './support/harness.ts';
-import type { Runtime } from '../src/runtime.ts';
+import type { HttpRuntime } from './support/harness.ts';
 
-async function connected(runtime: Runtime, session: Session) {
+async function connected(runtime: HttpRuntime, session: Session) {
   runtime.manager.install(fileURLToPath(new URL('../modules/simulator', import.meta.url)));
   const login = await call(runtime, { method: 'POST', url: '/api/platforms/sim/login', session });
   await call(runtime, { method: 'POST', url: `/api/platforms/sim/login/${login.body.challenge.id}/poll`, session });

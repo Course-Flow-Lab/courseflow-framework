@@ -1,9 +1,9 @@
 {
   "name": "courseflow-framework",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "type": "module",
-  "description": "基于 Node.js 的课程工作台与平台模块宿主",
+  "description": "Courseflow 后端运行时、HTTP API 与平台模块宿主",
   "license": "MIT",
   "engines": {
     "node": ">=24"
@@ -14,7 +14,6 @@
     "serve": "node src/main.ts serve",
     "test": "node --test test/",
     "typecheck": "tsc --noEmit",
-    "check:web": "node scripts/check-web.mjs",
     "cli": "node src/main.ts"
   },
   "dependencies": {
@@ -28,5 +27,9 @@
   },
   "allowScripts": {
     "argon2@0.45.2": true
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./http": "./src/server/app.ts"
   }
 }

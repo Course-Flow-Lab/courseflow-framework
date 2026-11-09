@@ -4,20 +4,15 @@ import { createSession, createUser } from '../src/core/auth.ts';
 import { nowSeconds } from '../src/core/domain.ts';
 import { boot, call, setupAdmin } from './support/harness.ts';
 
-test('web assets are served independently of cwd without exposing source or runtime data', async (t) => {
+test('backend exposes the Web API version without serving UI, source or runtime files', async (t) => {
   const { runtime } = await boot();
   t.after(() => runtime.close());
-  const html = await runtime.app.inject('/');
-  assert.equal(html.statusCode, 200);
-  assert.match(html.body, /id="sidebar-nav"/);
-  assert.match(String(html.headers['content-security-policy']), /style-src 'self'/);
-  assert.ok(!String(html.headers['content-security-policy']).includes('unsafe-inline'));
-  for (const file of ['/app.js', '/api.js', '/views.js', '/features.js', '/qa.js', '/logs.js', '/invitations.js', '/style.css']) {
-    const response = await runtime.app.inject(file);
-    assert.equal(response.statusCode, 200, file);
-    assert.equal(response.headers['x-content-type-options'], 'nosniff');
-  }
-  for (const file of ['/src/runtime.ts', '/secret.key', '/courseflow.db']) {
+  const bootstrap = await runtime.app.inject('/api/bootstrap');
+  assert.equal(bootstrap.statusCode, 200);
+  assert.equal(bootstrap.json().web_api_version, 1);
+  assert.equal(bootstrap.json().module_api, 1);
+  assert.equal((await runtime.app.inject('/healthz')).json().web_api_version, 1);
+  for (const file of ['/', '/index.html', '/app.js', '/src/app.js', '/style.css', '/src/runtime.ts', '/secret.key', '/courseflow.db']) {
     assert.equal((await runtime.app.inject(file)).statusCode, 404);
   }
 });

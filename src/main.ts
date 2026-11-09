@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { loadConfig, bindAddress } from './core/config.ts';
 import { configureProxy } from './core/network.ts';
 import { createRuntime, VERSION } from './runtime.ts';
+import { randomToken } from './core/domain.ts';
 import { importStudia } from './core/studia-import.ts';
 
 const HELP = `Courseflow framework ${VERSION}
@@ -110,33 +111,49 @@ async function main(): Promise<void> {
     }
   }
 
+  const { createHttpServer } = await import('./server/app.ts');
   const runtime = await createRuntime(config);
+  const setupCode = randomToken().slice(0, 32);
+  const app = createHttpServer(runtime, { ...config, setupCode });
+  let closing: Promise<void> | undefined;
+  const close = () => closing ??= (async () => {
+    try { await app.close(); } finally { await runtime.close(); }
+  })();
   const shutdown = async (signal: string): Promise<void> => {
     process.stderr.write(`\n收到 ${signal}，正在关闭…\n`);
-    await runtime.close();
-    process.exit(0);
+    try { await close(); process.exitCode = 0; }
+    catch (error) { process.stderr.write(`关闭失败：${(error as Error).message}\n`); process.exitCode = 1; }
   };
-  process.on('SIGINT', () => void shutdown('SIGINT'));
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  const onInterrupt = () => void shutdown('SIGINT');
+  const onTerminate = () => void shutdown('SIGTERM');
+  process.once('SIGINT', onInterrupt);
+  process.once('SIGTERM', onTerminate);
 
-  if (runtime.db.get('SELECT 1 FROM users LIMIT 1') === undefined) {
-    // First-run credential: terminal only, never exposed through an API.
-    process.stderr.write(`\nCourseflow 管理员设置码：${runtime.setupCode}\n\n`);
-  }
-  for (const row of runtime.manager.list()) {
-    if (row.enabled === 1) {
-      try {
-        await runtime.manager.describe(row.id);
-      } catch (error) {
-        process.stderr.write(`模块 ${row.id} 未能加载：${(error as Error).message}\n`);
+  try {
+    if (runtime.db.get('SELECT 1 FROM users LIMIT 1') === undefined) {
+      // First-run credential: terminal only, never exposed through an API.
+      process.stderr.write(`\nCourseflow 管理员设置码：${setupCode}\n\n`);
+    }
+    for (const row of runtime.manager.list()) {
+      if (row.enabled === 1) {
+        try {
+          await runtime.manager.describe(row.id);
+        } catch (error) {
+          process.stderr.write(`模块 ${row.id} 未能加载：${(error as Error).message}\n`);
+        }
       }
     }
-  }
-  const { host, port } = bindAddress(config.bind);
-  await runtime.app.listen({ host, port });
-  process.stderr.write(`Courseflow 已监听 ${config.publicUrl}（数据目录 ${config.dataDir}）\n`);
-  if (fs.existsSync(path.join(config.modulesDir))) {
-    process.stderr.write(`模块目录 ${config.modulesDir}\n`);
+    const { host, port } = bindAddress(config.bind);
+    await app.listen({ host, port });
+    process.stderr.write(`Courseflow 已监听 ${config.publicUrl}（数据目录 ${config.dataDir}）\n`);
+    if (fs.existsSync(path.join(config.modulesDir))) {
+      process.stderr.write(`模块目录 ${config.modulesDir}\n`);
+    }
+  } catch (error) {
+    process.removeListener('SIGINT', onInterrupt);
+    process.removeListener('SIGTERM', onTerminate);
+    await close();
+    throw error;
   }
 }
 
