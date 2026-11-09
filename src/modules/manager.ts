@@ -45,6 +45,7 @@ export type PlatformSummary = PlatformDescriptor & {
 const RESTART_BACKOFF_MS = [1000, 2000, 5000, 15000, 30000];
 
 export class ModuleManager {
+  private directoryProgress = new Map<string, { at: number; value: number | null }>();
   private db: Db;
   private vault: Vault;
   private sessions: Sessions;
@@ -458,6 +459,25 @@ export class ModuleManager {
     };
     if (!Array.isArray(result?.courses)) {
       throw new AppError(502, 'module_protocol_error', '模块没有返回课程列表');
+    }
+    // 平台列表可能省略总进度，目录只读回读失败不阻断课程列表。
+    for (const course of result.courses) {
+      if (course.progress != null || !course.outline_available) continue;
+      const key = JSON.stringify([owner, platform, handle, course.id, course.recruit_id]);
+      const cached = this.directoryProgress.get(key);
+      if (cached && Date.now() - cached.at < 60_000) {
+        if (cached.value !== null) { course.progress = cached.value; course.progress_source = 'units'; }
+        continue;
+      }
+      try {
+        const units = await this.units(owner, platform, course);
+        if (units.length && units.every(unit => unit.state !== 'unknown')) {
+          course.progress = 100 * units.filter(unit => unit.state === 'completed').length / units.length;
+          course.progress_source = 'units';
+        }
+      } catch { /* 保留未知进度，由目录页面显示具体错误。 */ }
+      if (this.directoryProgress.size >= 1000) this.directoryProgress.clear();
+      this.directoryProgress.set(key, { at: Date.now(), value: course.progress ?? null });
     }
     return result.courses;
   }

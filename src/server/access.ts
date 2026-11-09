@@ -13,9 +13,19 @@ export function readCookie(request: FastifyRequest, name: string): string | unde
   return undefined;
 }
 
+export function matchesOrigin(origin: string, publicUrl: string): boolean {
+  if (origin === publicUrl) return true;
+  try {
+    const incoming = new URL(origin), configured = new URL(publicUrl);
+    const local = new Set(['localhost', '127.0.0.1', '[::1]']);
+    return incoming.origin === origin && local.has(incoming.hostname) && local.has(configured.hostname)
+      && incoming.protocol === configured.protocol && incoming.port === configured.port;
+  } catch { return false; }
+}
+
 export function createAccess(db: Db, config: Config) {
   function requireOrigin(request: FastifyRequest): void {
-    if (request.headers.origin && request.headers.origin !== config.publicUrl) {
+    if (request.headers.origin && !matchesOrigin(request.headers.origin, config.publicUrl)) {
       throw new AppError(403, 'invalid_origin', '请求来源与站点地址不一致');
     }
   }
