@@ -325,3 +325,9 @@ interface Attempt {
 | `browser_unavailable/browser_timeout/browser_closed/browser_page_error` | 官方浏览器不可用或页面异常 |
 
 模块应验证清单与描述一致、未知方法返回有类型错误、分步调用不超过三十秒、stdin 关闭可退出。至少提供一轮无网络、无真实账号的模拟宿主测试，并单独记录真实账号验收范围。
+
+## 语音转写补充约定
+
+`cw.asr.transcribe` 的原始音频上限为 6 MiB，可通过 `CF_ASR_MAX_BYTES` 降低。Base64 膨胀后连同 RPC 元数据，单行消息上限为 9 MiB。`permissions.asr` 默认关闭，不改变原有模块的权限。
+
+转写等待和执行共用单段超时；任务取消、宿主退出会取消排队和执行中的转写。超时返回 `asr_timeout`，主动取消返回 `asr_cancelled`；未配置服务返回 `asr_unavailable`。语音服务配置、命令执行和临时音频均属于后端，WebUI 不直接访问语音服务。

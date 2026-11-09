@@ -611,14 +611,14 @@ export class ModuleManager {
         return { text: await this.ai.generate(entry.owner, String(params.prompt ?? ''), { signal: AbortSignal.timeout(25_000) }) };
       }
       case 'cw.asr.transcribe': {
-        this.sessions.resolveFetch(this.requireSessionParam(params), moduleId);
+        const entry = this.sessions.resolveFetch(this.requireSessionParam(params), moduleId);
         const manifest = JSON.parse(this.requireRow(moduleId).manifest) as Manifest;
         if (!manifest.permissions.asr || !this.asr) throw new AppError(403, 'permission_denied', '模块未声明语音转写权限');
         const audio = typeof params.audio === 'string' ? params.audio : '';
         if (!audio) throw badRequest('缺少音频数据');
         const mime = typeof params.mime === 'string' && params.mime ? params.mime : 'audio/mpeg';
         const buffer = Buffer.from(audio, 'base64');
-        return { text: await this.asr.transcribe(buffer, mime) };
+        return { text: await this.asr.transcribe(buffer, mime, { signal: entry.job ? this.jobSignals.get(entry.job.id)?.signal : undefined }) };
       }
       case 'cw.browser.open':
       case 'cw.browser.evaluate':

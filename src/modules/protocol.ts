@@ -1,7 +1,8 @@
 import { badRequest } from '../core/errors.ts';
 
 export const MODULE_API = 1;
-export const CALL_TIMEOUT_MS = Number(process.env.CF_CALL_TIMEOUT_MS) || 30_000;
+const configuredTimeout = Number(process.env.CF_CALL_TIMEOUT_MS);
+export const CALL_TIMEOUT_MS = Number.isSafeInteger(configuredTimeout) && configuredTimeout > 0 && configuredTimeout <= 2_147_483_647 ? configuredTimeout : 30_000;
 export const DESCRIBE_TIMEOUT_MS = 5_000;
 
 export type LoginMethod = 'qr' | 'password' | 'browser';

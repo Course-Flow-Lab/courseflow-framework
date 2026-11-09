@@ -37,10 +37,13 @@ await http.listen(bindAddress(config.bind));
 
 // 由宿主在退出或启动失败时调用；关闭 HTTP 不会自动关闭运行时。
 async function close() {
-  try { await http.close(); } finally { await runtime.close(); }
+  try { await Promise.all([http.close(), runtime.asr.shutdown()]); }
+  finally { await runtime.close(); }
 }
 ```
 
 只需要后端服务时直接调用 `createRuntime(runtimeConfig)`；配置只需数据路径、日志级别和夜间临时覆盖，不需要绑定地址或公开 URL。模块 CLI 使用 `recoverTasks: false`，避免操作模块列表时改写运行中任务状态。运行时关闭可重复调用，即使某个停止步骤失败，也会继续释放剩余资源。
 
-本轮不改动模块运行器、模块协议、数据库结构或内置题库接口。未来 App 可在此基础上组合独立前端与后端，不要求引入桌面 SDK、手机 SDK 或额外服务进程。
+当前开发分支已接入 PR #2 的可选宿主语音转写。`runtime.asr` 由后端创建，`/api/settings` 增加只读的 `asr: { available, backend, model }`；未配置时保持不可用，不影响其他功能。应用退出先停止接收 HTTP 请求并取消转写，再关闭其余运行时；仅关闭 HTTP 服务不会销毁后端。
+
+模块运行方式、数据库结构和内置题库接口保持不变。语音转写是模块 API v1 的可选能力，原有模块不需要新增权限。未来 App 可在此基础上组合独立前端与后端，不要求引入桌面 SDK、手机 SDK 或额外服务进程。
