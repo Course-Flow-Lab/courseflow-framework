@@ -85,7 +85,7 @@ export async function createRuntime(
       config, db, vault, sessions, manager, jobs, log, ai, memory, questionBank: memory, asr, browser, logs,
       close: () => closing ??= (async () => {
         const errors: unknown[] = [];
-        for (const close of [() => jobs.shutdown(), () => manager.stopAll(), () => browser.shutdown(), () => db.close()]) {
+        for (const close of [() => asr.shutdown(), () => jobs.shutdown(), () => manager.stopAll(), () => browser.shutdown(), () => db.close()]) {
           try { await close(); } catch (error) { errors.push(error); }
         }
         if (errors.length) throw new AggregateError(errors, '后端运行时未能完全关闭');

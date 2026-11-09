@@ -117,7 +117,7 @@ async function main(): Promise<void> {
   const app = createHttpServer(runtime, { ...config, setupCode });
   let closing: Promise<void> | undefined;
   const close = () => closing ??= (async () => {
-    try { await app.close(); } finally { await runtime.close(); }
+    try { await Promise.all([app.close(), runtime.asr.shutdown()]); } finally { await runtime.close(); }
   })();
   const shutdown = async (signal: string): Promise<void> => {
     process.stderr.write(`\n收到 ${signal}，正在关闭…\n`);

@@ -28,7 +28,7 @@ flowchart LR
 - `jobs/engine.ts` 管理队列、用户并发、跨用户的同账号互斥、代次和检查点。
 - `jobs/workflows.ts` 编排复习、分段读取试卷、草稿、确认、交卷回读和课程活动。
 - `services/` 提供加密模型配置、答案校验与记忆、原生 CDP 浏览器、报告格式和私有日志存储。
-- `runtime.ts` 只创建后端服务，不创建 HTTP 服务、不绑定端口、不注册进程信号。关闭时依次停止任务、模块、官方浏览器和数据库。
+- `runtime.ts` 只创建后端服务，不创建 HTTP 服务、不绑定端口、不注册进程信号。关闭时先取消语音转写，再依次停止任务、模块、官方浏览器和数据库。
 - `server/` 是可选 HTTP 适配层，负责认证、资源和所有权校验；调用方通过 `createHttpServer()` 装配，先关闭 HTTP 再关闭运行时。CLI 负责监听端口和进程信号。
 - [courseflow-webui](https://github.com/Course-Flow-Lab/courseflow-webui) 独立构建与发布，只通过 HTTP API 调用后端。静态资源由部署层托管，框架不导入前端文件。
 

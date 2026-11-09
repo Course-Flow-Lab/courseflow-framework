@@ -1,6 +1,7 @@
 import type { Readable, Writable } from 'node:stream';
 
-const MAX_LINE_BYTES = 8 * 1024 * 1024;
+// 6 MiB 音频经 Base64 编码已达 8 MiB，还需容纳 RPC 字段。
+const MAX_LINE_BYTES = 9 * 1024 * 1024;
 
 /**
  * Newline-delimited framing over a child process pipe. One JSON message per line; any other
