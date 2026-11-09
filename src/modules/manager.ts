@@ -7,6 +7,7 @@ import type { Vault } from '../core/vault.ts';
 import type { Sessions } from '../core/sessions.ts';
 import type { JobScope } from '../core/sessions.ts';
 import type { AiService } from '../services/ai.ts';
+import type { AsrService } from '../services/asr.ts';
 import type { BrowserService } from '../services/browser.ts';
 import type { AnswerMemory } from '../services/answers.ts';
 import { validateQuestion, type Evidence } from '../question-bank/index.js';
@@ -54,6 +55,7 @@ export class ModuleManager {
   private restartAttempts = new Map<string, number>();
   private restartTimers = new Map<string, NodeJS.Timeout>();
   private ai?: AiService;
+  private asr?: AsrService;
   private browser?: BrowserService;
   private memory?: AnswerMemory;
   private hostOperations = new Set<Promise<unknown>>();
@@ -69,6 +71,7 @@ export class ModuleManager {
     modulesDir: string;
     log: Logger;
     ai?: AiService;
+    asr?: AsrService;
     browser?: BrowserService;
     memory?: AnswerMemory;
   }) {
@@ -78,6 +81,7 @@ export class ModuleManager {
     this.modulesDir = options.modulesDir;
     this.log = options.log;
     this.ai = options.ai;
+    this.asr = options.asr;
     this.browser = options.browser;
     this.memory = options.memory;
     this.maintenanceTimer = setInterval(() => { if (!this.maintaining) this.maintaining = this.maintain().finally(() => { this.maintaining = undefined; }); }, 60_000);
@@ -605,6 +609,16 @@ export class ModuleManager {
         const manifest = JSON.parse(this.requireRow(moduleId).manifest) as Manifest;
         if (!manifest.permissions.ai || !this.ai) throw new AppError(403, 'permission_denied', '模块未声明模型权限');
         return { text: await this.ai.generate(entry.owner, String(params.prompt ?? ''), { signal: AbortSignal.timeout(25_000) }) };
+      }
+      case 'cw.asr.transcribe': {
+        this.sessions.resolveFetch(this.requireSessionParam(params), moduleId);
+        const manifest = JSON.parse(this.requireRow(moduleId).manifest) as Manifest;
+        if (!manifest.permissions.asr || !this.asr) throw new AppError(403, 'permission_denied', '模块未声明语音转写权限');
+        const audio = typeof params.audio === 'string' ? params.audio : '';
+        if (!audio) throw badRequest('缺少音频数据');
+        const mime = typeof params.mime === 'string' && params.mime ? params.mime : 'audio/mpeg';
+        const buffer = Buffer.from(audio, 'base64');
+        return { text: await this.asr.transcribe(buffer, mime) };
       }
       case 'cw.browser.open':
       case 'cw.browser.evaluate':
