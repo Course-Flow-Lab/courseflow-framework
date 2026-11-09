@@ -9,7 +9,7 @@ export function registerSettingsRoutes(app: FastifyInstance, c: ServerContext): 
   const { requireIdentity } = c.access;
   app.get('/api/settings', async (request) => {
     const who = requireIdentity(request);
-    return { preferences: preferences(c.db, who.user.id), models: c.ai.list(who.user.id), browser: { available: c.browser.available() }, legacy: legacySummary(c, who.user.id) };
+    return { preferences: preferences(c.db, who.user.id), models: c.ai.list(who.user.id), browser: { available: c.browser.available() }, asr: c.asr.describe(), legacy: legacySummary(c, who.user.id) };
   });
   app.post<{ Body: Partial<Preferences> }>('/api/settings/preferences', async (request) => {
     const who = requireIdentity(request, { write: true });
