@@ -107,7 +107,8 @@ export class BrowserService {
     if (target.protocol !== 'https:' || !allowedHost(allow, target.hostname) || target.username || target.password) throw badRequest('官方页面超出模块网络权限');
     if (this.pages.size >= 4) throw conflict('browser_limit', '官方浏览器页面已达到并发上限，请稍后继续');
     const profile = fs.mkdtempSync(path.join(this.directory, 'page-'));
-    const child = spawn(this.executable, ['--headless=new', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--disable-background-networking', '--disable-dev-shm-usage', '--autoplay-policy=no-user-gesture-required', ...chromeProxyArgument(), 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    // 临时无痕上下文由宿主注入 Cookie，无需访问桌面密钥环；账号持久化仍由 Vault 加密。
+    const child = spawn(this.executable, ['--headless=new', '--password-store=basic', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--disable-background-networking', '--disable-dev-shm-usage', '--autoplay-policy=no-user-gesture-required', ...chromeProxyArgument(), 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
     let cdp: Cdp | undefined;
     try {
       const socketUrl = await new Promise<string>((resolve, reject) => {
