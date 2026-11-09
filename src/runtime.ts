@@ -9,6 +9,7 @@ import { JobEngine } from './jobs/engine.ts';
 import { createApp } from './server/app.ts';
 import { FRAMEWORK_VERSION } from './version.ts';
 import { AiService } from './services/ai.ts';
+import { AsrService } from './services/asr.ts';
 import { AnswerMemory } from './services/answers.ts';
 import { QuestionBankService } from './question-bank/service.ts';
 import { BrowserService } from './services/browser.ts';
@@ -28,6 +29,7 @@ export type Runtime = {
   ai: AiService;
   memory: AnswerMemory;
   questionBank: QuestionBankService;
+  asr: AsrService;
   browser: BrowserService;
   logs: LogStore;
   app: FastifyInstance;
@@ -67,15 +69,23 @@ export async function createRuntime(
     const sessions = new Sessions(db, vault);
     const ai = new AiService(db, vault);
     const memory = new QuestionBankService(db, vault);
+    const asr = new AsrService({
+      url: process.env.CF_ASR_URL,
+      command: process.env.CF_ASR_COMMAND,
+      model: process.env.CF_ASR_MODEL,
+      timeoutMs: Number(process.env.CF_ASR_TIMEOUT_MS) || undefined,
+      maxBytes: Number(process.env.CF_ASR_MAX_BYTES) || undefined,
+      concurrency: Number(process.env.CF_ASR_CONCURRENCY) || undefined,
+    });
     const browser = new BrowserService(config.dataDir);
-    const manager = new ModuleManager({ db, vault, sessions, modulesDir: config.modulesDir, log, ai, browser, memory });
+    const manager = new ModuleManager({ db, vault, sessions, modulesDir: config.modulesDir, log, ai, asr, browser, memory });
     const jobs = new JobEngine({ db, vault, manager, log, ai, memory, recoverInterrupted: options.recoverTasks });
     const setupCode = options.setupCode ?? randomToken().slice(0, 32);
-    const app = createApp({ config, db, vault, manager, jobs, setupCode, log, ai, memory, browser, logs });
+    const app = createApp({ config, db, vault, manager, jobs, setupCode, log, ai, memory, asr, browser, logs });
     log('info', `Courseflow ${VERSION} 运行时已就绪`);
     let closing: Promise<void> | undefined;
     return {
-      config, db, vault, sessions, manager, jobs, app, setupCode, ai, memory, questionBank: memory, browser, logs,
+      config, db, vault, sessions, manager, jobs, app, setupCode, ai, memory, questionBank: memory, asr, browser, logs,
       close: () => closing ??= (async () => {
         await app.close();
         await jobs.shutdown();

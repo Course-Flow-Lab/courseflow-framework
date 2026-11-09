@@ -1,7 +1,7 @@
 import { badRequest } from '../core/errors.ts';
 
 export const MODULE_API = 1;
-export const CALL_TIMEOUT_MS = 30_000;
+export const CALL_TIMEOUT_MS = Number(process.env.CF_CALL_TIMEOUT_MS) || 30_000;
 export const DESCRIBE_TIMEOUT_MS = 5_000;
 
 export type LoginMethod = 'qr' | 'password' | 'browser';
@@ -37,6 +37,7 @@ export type Manifest = {
     network: string[];
     browser: boolean;
     ai: boolean;
+    asr?: boolean;
     question_bank?: boolean;
     storage: 'module';
   };
@@ -266,6 +267,7 @@ export function validateManifest(raw: unknown): Manifest {
       network,
       browser: permissions.browser === true,
       ai: permissions.ai === true,
+      asr: permissions.asr === true,
       question_bank: permissions.question_bank === true,
       storage: 'module',
     },

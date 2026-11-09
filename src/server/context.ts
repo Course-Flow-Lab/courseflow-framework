@@ -5,6 +5,7 @@ import type { JobEngine } from '../jobs/engine.ts';
 import type { ModuleManager, Logger } from '../modules/manager.ts';
 import type { createAccess } from './access.ts';
 import type { AiService } from '../services/ai.ts';
+import type { AsrService } from '../services/asr.ts';
 import type { AnswerMemory } from '../services/answers.ts';
 import type { BrowserService } from '../services/browser.ts';
 import type { LogStore } from '../services/logs.ts';
@@ -19,6 +20,7 @@ export type ServerServices = {
   log: Logger;
   ai: AiService;
   memory: AnswerMemory;
+  asr: AsrService;
   browser: BrowserService;
   logs: LogStore;
 };
