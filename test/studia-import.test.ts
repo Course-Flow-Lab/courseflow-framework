@@ -1,3 +1,4 @@
+import { withHttp, type HttpRuntime } from './support/harness.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -13,7 +14,7 @@ import { digest, nowSeconds } from '../src/core/domain.ts';
 import { createUser, createSession, verifyPassword } from '../src/core/auth.ts';
 import { preferences } from '../src/core/preferences.ts';
 import { AnswerMemory } from '../src/services/answers.ts';
-import { createRuntime, type Runtime } from '../src/runtime.ts';
+import { createRuntime } from '../src/runtime.ts';
 import { configFor, call, tokenFrom } from './support/harness.ts';
 
 function fixture(root: string) {
@@ -69,10 +70,10 @@ test('Studia 只读预检不写目标，AES-GCM 16 字节随机数可导入，�
 });
 
 test('旧密码可从站点登录，迁移档案按用户隔离，导出 JSON 隐藏凭据且不暴露配置',async(t)=>{
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'courseflow-studia-http-')); let runtime:Runtime|undefined;
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'courseflow-studia-http-')); let runtime:HttpRuntime|undefined;
   t.after(async()=>{await runtime?.close();fs.rmSync(root,{recursive:true,force:true});});
   const source=fixture(root),destination=path.join(root,'new'); await importStudia({source,destination});
-  runtime=await createRuntime(configFor(destination));
+  runtime=withHttp(await createRuntime(configFor(destination)),configFor(destination));
   const login=await call(runtime,{method:'POST',url:'/api/auth/login',body:{username:'old-admin',password:'pass2026'}}); assert.equal(login.status,200);
   const session={token:tokenFrom(login.setCookie),csrf:login.body.csrf};
   assert.equal((await call(runtime,{url:'/api/settings',session})).body.legacy.total,2);

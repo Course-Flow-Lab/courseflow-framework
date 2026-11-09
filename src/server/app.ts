@@ -4,7 +4,8 @@ import { createAccess, readCookie } from './access.ts';
 import { identity } from '../core/auth.ts';
 import { nowSeconds } from '../core/domain.ts';
 import type { ServerContext, ServerServices } from './context.ts';
-import { registerWebRoutes } from './web.ts';
+import type { Runtime } from '../runtime.ts';
+import type { HttpConfig } from '../core/config.ts';
 import { registerSystemRoutes } from './routes/system.ts';
 import { registerAuthRoutes } from './routes/auth.ts';
 import { registerPlatformsRoutes } from './routes/platforms.ts';
@@ -16,7 +17,15 @@ import { registerLogsRoutes } from './routes/logs.ts';
 import { registerRegistrationRoutes } from './routes/registration.ts';
 import { registerLegacyRoutes } from './routes/legacy.ts';
 
-export function createApp(services: ServerServices): FastifyInstance {
+export type HttpServerOptions = HttpConfig & { setupCode: string };
+
+/** 只装配 HTTP API；调用方负责监听，并在关闭 HTTP 后关闭运行时。 */
+export function createHttpServer(runtime: Runtime, options: HttpServerOptions): FastifyInstance {
+  const services: ServerServices = {
+    ...runtime,
+    config: { ...runtime.config, bind: options.bind, publicUrl: options.publicUrl },
+    setupCode: options.setupCode,
+  };
   const app = Fastify({ logger: false, bodyLimit: 1_048_576, trustProxy: false });
   const context: ServerContext = { ...services, access: createAccess(services.db, services.config) };
   const actors = new WeakMap<object, string | null>();
@@ -49,7 +58,6 @@ export function createApp(services: ServerServices): FastifyInstance {
     return reply.status(status >= 400 && status < 600 ? status : 500)
       .send({ error: { code: 'internal_error', message } });
   });
-  registerWebRoutes(app);
   registerSystemRoutes(app, context);
   registerAuthRoutes(app, context);
   registerRegistrationRoutes(app, context);

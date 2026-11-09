@@ -7,12 +7,14 @@ import { nowSeconds, quietStatus } from '../../core/domain.ts';
 import { MODULE_API } from '../../modules/protocol.ts';
 import { FRAMEWORK_VERSION as VERSION } from '../../version.ts';
 import { registrationSettings } from '../../core/invitations.ts';
+import { WEB_API_VERSION } from '../version.ts';
 
 export function registerSystemRoutes(app: FastifyInstance, { db, manager }: ServerContext): void {
   app.get('/healthz', async () => ({
     status: 'ok',
     name: 'courseflow-framework',
     version: VERSION,
+    web_api_version: WEB_API_VERSION,
     module_api: MODULE_API,
     modules: manager.list().map((row) => ({
       id: row.id,
@@ -28,6 +30,7 @@ export function registerSystemRoutes(app: FastifyInstance, { db, manager }: Serv
     return {
       name: 'Courseflow',
       version: VERSION,
+      web_api_version: WEB_API_VERSION,
       module_api: MODULE_API,
       setup_required: !hasUsers(db),
       registration: registrationSettings(db),

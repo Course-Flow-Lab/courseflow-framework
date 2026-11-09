@@ -8,7 +8,8 @@
 flowchart LR
   Web[网页工作台] --> HTTP[HTTP 路由]
   CLI[命令行] --> Runtime[运行时装配]
-  Runtime --> HTTP
+  CLI --> HTTP
+  HTTP --> Runtime
   HTTP --> Jobs[任务调度与编排]
   HTTP --> Host[模块与宿主服务]
   Jobs --> Host
@@ -27,8 +28,11 @@ flowchart LR
 - `jobs/engine.ts` 管理队列、用户并发、跨用户的同账号互斥、代次和检查点。
 - `jobs/workflows.ts` 编排复习、分段读取试卷、草稿、确认、交卷回读和课程活动。
 - `services/` 提供加密模型配置、答案校验与记忆、原生 CDP 浏览器、报告格式和私有日志存储。
-- `server/` 负责资源和所有权校验；`runtime.ts` 是 CLI、HTTP 和测试的共同装配入口。
-- `web/features.js` 提供课程功能、模型设置和人工补答；`qa.js` 提供互动分、草稿及发布记录；`app.js` 管理导航及交互；`views.js` 保持通用布局。
+- `runtime.ts` 只创建后端服务，不创建 HTTP 服务、不绑定端口、不注册进程信号。关闭时依次停止任务、模块、官方浏览器和数据库。
+- `server/` 是可选 HTTP 适配层，负责认证、资源和所有权校验；调用方通过 `createHttpServer()` 装配，先关闭 HTTP 再关闭运行时。CLI 负责监听端口和进程信号。
+- [courseflow-webui](https://github.com/Course-Flow-Lab/courseflow-webui) 独立构建与发布，只通过 HTTP API 调用后端。静态资源由部署层托管，框架不导入前端文件。
+
+Web API 使用独立的 `web_api_version: 1`；`module_api` 仍表示平台模块协议。后端包提供运行时入口和 `./http` 子入口，具体接口与生命周期见 [Web API 与嵌入方式](WEB-API.md)。
 
 ## 站点注册
 

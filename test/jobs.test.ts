@@ -5,9 +5,9 @@ import { createRuntime } from '../src/runtime.ts';
 import { Db } from '../src/core/db.ts';
 import { createUser, createSession } from '../src/core/auth.ts';
 import { nowSeconds } from '../src/core/domain.ts';
-import { boot, call, setupAdmin, waitFor, configFor, type Session } from './support/harness.ts';
+import { boot, call, setupAdmin, waitFor, configFor, withHttp, type HttpRuntime, type Session } from './support/harness.ts';
 
-async function connect(runtime: Awaited<ReturnType<typeof createRuntime>>, session: Session) {
+async function connect(runtime: HttpRuntime, session: Session) {
   runtime.manager.install(fileURLToPath(new URL('../modules/simulator', import.meta.url)));
   const begin = await call(runtime, { method: 'POST', url: '/api/platforms/sim/login', session });
   await call(runtime, { method: 'POST', url: `/api/platforms/sim/login/${begin.body.challenge.id}/poll`, session });
@@ -104,7 +104,7 @@ test('restart pauses orphaned tasks while module CLI runtimes leave them alone',
   const check = new Db(configFor(dir).dbPath);
   assert.equal(check.get<{ state: string }>('SELECT state FROM tasks WHERE id=?1', id)?.state, 'running');
   check.close();
-  const restarted = await createRuntime(configFor(dir));
+  const restarted = withHttp(await createRuntime(configFor(dir)), configFor(dir));
   t.after(() => restarted.close());
   const tasks = await call(restarted, { url: '/api/tasks', session });
   const task = tasks.body.tasks.find((item: { id: string }) => item.id === id);
