@@ -50,6 +50,7 @@ export type DescribeResult = {
 };
 
 export type Course = {
+  progress_source?: 'units';
   id: string;
   recruit_id: string;
   name: string;

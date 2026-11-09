@@ -248,6 +248,8 @@ export async function performFetch(
         };
       }
       const next = new URL(location, current);
+      // 旧平台可能返回 HTTP 跳转；始终通过 HTTPS 访问同一目标。
+      if (next.protocol === 'http:' && !next.port) next.protocol = 'https:';
       if (next.protocol !== 'https:' || !allowedHost(options.allow, next.hostname)) {
         throw new NetError('net_blocked', `重定向到未授权的主机 ${next.hostname}`);
       }
