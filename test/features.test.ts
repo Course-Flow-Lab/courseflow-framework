@@ -70,8 +70,8 @@ test('人工补答保留原答案，确认后交卷，并加密保存可导出�
   assert.deepEqual(runtime.memory.get(owner, 'sim', `${course.id}/${course.recruit_id}`, question('new')), ['b']);
   const row = runtime.db.get<{ checkpoint: Uint8Array }>('SELECT checkpoint FROM tasks WHERE id=?1', task.id)!;
   assert.ok(!Buffer.from(row.checkpoint).includes(Buffer.from('模拟作业')));
-  const response = await runtime.app.inject({ url: `/api/tasks/${task.id}/export?format=md`, headers: { cookie: `cf_session=${session.token}` } });
-  assert.equal(response.statusCode, 200); assert.match(response.body, /平台已确认/); assert.match(response.body, /得分 95/);
+  const response = await runtime.app.inject({ url: `/api/tasks/${task.id}/export`, headers: { cookie: `cf_session=${session.token}` } });
+  assert.equal(response.statusCode, 200); assert.match(response.body, /平台已确认/); assert.match(response.body, /95 分/); assert.match(String(response.headers['content-type']), /text\/plain/);
 });
 
 test('交卷结果未知时回读而不重发，人工回读也保存确认记录', async (t) => {

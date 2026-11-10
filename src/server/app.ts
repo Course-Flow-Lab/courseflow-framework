@@ -14,6 +14,7 @@ import { registerModulesRoutes } from './routes/modules.ts';
 import { registerSettingsRoutes } from './routes/settings.ts';
 import { registerFeaturesRoutes } from './routes/features.ts';
 import { registerLogsRoutes } from './routes/logs.ts';
+import { registerAdminRoutes } from './routes/admin.ts';
 import { registerRegistrationRoutes } from './routes/registration.ts';
 import { registerLegacyRoutes } from './routes/legacy.ts';
 
@@ -61,6 +62,7 @@ export function createHttpServer(runtime: Runtime, options: HttpServerOptions): 
   registerSystemRoutes(app, context);
   registerAuthRoutes(app, context);
   registerRegistrationRoutes(app, context);
+  registerAdminRoutes(app, context);
   registerLegacyRoutes(app, context);
   registerPlatformsRoutes(app, context);
   registerTasksRoutes(app, context);

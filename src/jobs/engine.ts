@@ -4,6 +4,7 @@ import type { ModuleManager } from '../modules/manager.ts';
 import type { Course, Unit, Question } from '../modules/protocol.ts';
 import { nowSeconds, randomId, sleep } from '../core/domain.ts';
 import { badRequest, conflict, notFound } from '../core/errors.ts';
+import { effectiveTaskPolicy } from '../core/task-policy.ts';
 import { preferences, quietFor } from '../core/preferences.ts';
 import type { AiService } from '../services/ai.ts';
 import { AnswerMemory, validAnswer, ANSWER_SYSTEM, questionPrompt, parseModelAnswer } from '../services/answers.ts';
@@ -215,12 +216,13 @@ export class JobEngine {
   }
   private canRun(row: TaskRow): boolean {
     const running = this.db.all<TaskRow>("SELECT * FROM tasks WHERE state='running' AND id!=?1", row.id);
-    const user = preferences(this.db, row.owner);
+    if (this.db.get<{ disabled: number }>('SELECT disabled FROM users WHERE id=?1', row.owner)?.disabled !== 0) return false;
+    const user = effectiveTaskPolicy(this.db, row.owner);
     if (running.filter((r) => r.owner === row.owner).length >= user.concurrency) return false;
     const account = this.manager.accountKey(row.owner, row.platform);
     for (const other of running) {
       if (this.manager.accountKey(other.owner, other.platform) !== account) continue;
-      const parallel = user.parallel_study && preferences(this.db, other.owner).parallel_study && row.operation === 'study' && other.operation === 'study';
+      const parallel = user.parallel_study && effectiveTaskPolicy(this.db, other.owner).parallel_study && row.operation === 'study' && other.operation === 'study';
       if (!parallel || row.course_id === other.course_id && row.recruit_id === other.recruit_id) return false;
     }
     return true;
@@ -274,6 +276,7 @@ export class JobEngine {
     owner: string,
     input: { platform: string; course: Course; unit_ids: string[]; operation: string; options?: Record<string, unknown> },
   ): TaskView {
+    if (this.db.get<{ disabled: number }>('SELECT disabled FROM users WHERE id=?1', owner)?.disabled !== 0) throw conflict('user_disabled', '此用户已停用');
     const unitIds = [...new Set(input.unit_ids)];
     if (unitIds.length === 0) throw badRequest('请先选择学习单元');
     if (unitIds.length > MAX_UNITS) throw badRequest('一次最多选择 200 个单元');
@@ -359,6 +362,7 @@ export class JobEngine {
   resume(owner: string, id: string): TaskView {
     const row = this.db.get<TaskRow>('SELECT * FROM tasks WHERE id = ?1 AND owner = ?2', id, owner);
     if (!row) throw notFound('找不到这个任务');
+    if (this.db.get<{ disabled: number }>('SELECT disabled FROM users WHERE id=?1', owner)?.disabled !== 0) throw conflict('user_disabled', '此用户已停用');
     if (row.state !== 'paused') throw conflict('invalid_state', '只有已暂停的任务可以继续');
     if (quietFor(this.db, owner).active) throw conflict('quiet_hours', '夜间暂停期间不能继续任务');
     this.db.run(

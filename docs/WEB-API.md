@@ -6,7 +6,7 @@ Framework 是后端，WebUI 是独立客户端。后端不提供根页面或静�
 
 - `/api/bootstrap` 无需登录，返回站点初始化状态、注册策略、能力和 `web_api_version: 1`。`/healthz` 同样提供该字段，便于核对发布版本。
 - `module_api` 表示平台模块 RPC 版本，与 Web API 独立。当前 WebUI 仅接受数字 `web_api_version: 1`；缺失或不匹配时显示兼容性提示。
-- 现有 API 路径和响应结构保持不变。未来兼容增加字段不提升主版本；破坏客户端兼容性的调整必须更新 Web API 版本并配套发布前端。
+- API 使用下文声明的路径和结构；增加字段或新管理接口不改变接口版本。任务执行记录导出统一为纯文本，旧的多格式参数返回 400，前后端须配套更新。
 - 错误返回 `{ "error": { "code": "错误代码", "message": "中文说明" } }`。网关可能返回非 JSON 的 502、503、504，前端应显示服务不可用提示。
 - 所有不透明 ID 按路径段单独编码，包括中文及斜杠。代理不得解码再拼接或重写 API 路径。
 
@@ -53,3 +53,32 @@ async function close() {
 当公开地址为本机地址时，来源检查允许 `localhost`、`127.0.0.1` 与 `[::1]` 在相同协议及端口下互通；其他站点仍须匹配配置的公开地址。Cookie 和 CSRF 检查保持启用。
 
 课程列表未提供进度时，宿主尝试读取目录。全部单元状态已知时，以已完成单元数除以总单元数返回 `progress`，并附加 `progress_source: "units"`。此值是目录完成度，不代表平台成绩或视频观看时长。回读结果按用户、平台会话和课程缓存一分钟；目录不可用或存在未知状态时保留空进度。
+
+
+## 站点管理
+
+`/api/admin/*` 仅管理员可访问，所有写入须提供 CSRF 并通过来源检查。普通成员的 `/api/tasks/*` 始终只处理自己的任务。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/admin/overview` | 启用用户、任务状态与模块概况 |
+| `GET /api/admin/users` | 用户列表、任务数量、管理上限和当前有效并发，不含密码哈希 |
+| `POST /api/admin/users` | 以 `username`、`password`、`role` 创建账号，无需邀请码 |
+| `POST /api/admin/users/:id/status` | 设置布尔值 `disabled`，停用时撤销会话并暂停未结束任务 |
+| `POST /api/admin/users/:id/password` | 设置 `password` 并撤销此用户所有站点会话 |
+| `POST /api/admin/users/:id/role` | 设置 `role: user 或 admin`；不能降低自己的角色 |
+| `POST /api/admin/users/:id/limit` | 设置 `limit: 1–8`，或 `null` 恢复站点默认 |
+| `POST /api/admin/users/:id/pause-tasks`、`stop-tasks` | 暂停或停止该用户的全部未结束任务 |
+| `GET/POST /api/admin/settings` | 读取或保存 `max_concurrency`、`parallel_study` |
+| `GET /api/admin/tasks` | `owner`、`state` 过滤；`offset` 分页，每页 100 项，返回 `total`、`offset`、`limit` |
+| `GET /api/admin/tasks/:id` | 任务概况和最近事件，不返回作答正文或凭据 |
+| `POST /api/admin/tasks/:id/:action` | `pause`、`resume`、`stop` 或 `move`；排序提供 `direction: up 或 down` |
+| `GET /api/admin/tasks/:id/logs` | 下载该任务的纯文本日志 |
+
+管理任务操作同时记录操作者与任务事件。管理员上限和并行许可存于现有 `site_settings`，无需数据库结构或模块协议迁移。默认值保留原有 1–8 项个人并发设置；调度器对停用账号拒绝创建和继续任务。
+
+## 纯文本日志
+
+`/api/logs/export`、`/api/tasks/:id/logs`、`/api/tasks/:id/export` 和 `/api/history/export` 均返回 `text/plain; charset=utf-8`、`.log` 附件与 `Cache-Control: no-store`。管理员可使用 `kind=site_tasks` 导出全站任务日志；成员只能导出自己的任务。任务记录仅接受省略格式或 `format=log/txt`，旧的 `md/docx/json/csv` 参数返回 400。课程记录可通过 `platform`、`course`、`recruit` 过滤，标识须按查询参数编码；所有范围始终受账号权限限制。
+
+试卷和成绩单属于课程数据导出，继续使用各自的格式接口，与执行日志分开。

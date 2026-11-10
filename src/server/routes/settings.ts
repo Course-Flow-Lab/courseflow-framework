@@ -3,13 +3,16 @@ import type { ServerContext } from '../context.ts';
 import { preferences, savePreferences, type Preferences } from '../../core/preferences.ts';
 import type { ModelInput } from '../../services/ai.ts';
 import { badRequest, forbidden } from '../../core/errors.ts';
+import { taskPolicy, effectiveTaskPolicy } from '../../core/task-policy.ts';
 import { legacySummary } from './legacy.ts';
 
 export function registerSettingsRoutes(app: FastifyInstance, c: ServerContext): void {
   const { requireIdentity } = c.access;
   app.get('/api/settings', async (request) => {
     const who = requireIdentity(request);
-    return { preferences: preferences(c.db, who.user.id), models: c.ai.list(who.user.id), browser: { available: c.browser.available() }, asr: c.asr.describe(), legacy: legacySummary(c, who.user.id) };
+    const policy = taskPolicy(c.db);
+    const task_policy = { limit: policy.user_limits[who.user.id] ?? policy.max_concurrency, parallel_study: policy.parallel_study, effective_concurrency: effectiveTaskPolicy(c.db, who.user.id).concurrency };
+    return { task_policy, preferences: preferences(c.db, who.user.id), models: c.ai.list(who.user.id), browser: { available: c.browser.available() }, asr: c.asr.describe(), legacy: legacySummary(c, who.user.id) };
   });
   app.post<{ Body: Partial<Preferences> }>('/api/settings/preferences', async (request) => {
     const who = requireIdentity(request, { write: true });

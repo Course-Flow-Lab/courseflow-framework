@@ -65,6 +65,32 @@ test('日志下载区分管理员与个人任务，完整导出超过一百条�
   const task = await download('/api/tasks/log-admin-task/logs');
   assert.equal(task.statusCode, 200); assert.match(task.body, /合成诊断 0\n/); assert.match(task.body, /合成诊断 119/);
   assert.equal((await download('/api/tasks/log-admin-task/logs', user)).statusCode, 404);
+  assert.equal((await download('/api/logs/export?kind=site_tasks&' + query, user)).statusCode, 403);
+  const site = await download('/api/logs/export?kind=site_tasks&' + query);
+  assert.match(site.body, /合成诊断/); assert.match(site.body, /成员自己的记录/); assert.match(site.body, /log-member/);
   const personal = await download('/api/logs/export?kind=tasks&' + query, user);
   assert.equal(personal.statusCode, 200); assert.match(personal.body, /成员自己的记录/); assert.doesNotMatch(personal.body, /合成诊断/);
+});
+
+test('任务与执行记录导出仅支持纯文本，按账号及不透明课程标识过滤', async t => {
+  const { runtime } = await boot(); t.after(() => runtime.close());
+  const session = await setupAdmin(runtime), owner = (await call(runtime, { url: '/api/me', session })).body.user.id;
+  const member = await createUser(runtime.db, 'plain-log-member', 'synthetic-plain-log-password', 'user', nowSeconds());
+  for (const [id, user, course] of [['plain-a', owner, '课程/一'], ['plain-b', owner, '课程/二'], ['plain-other', member.id, '课程/一']]) {
+    runtime.db.run("INSERT INTO tasks(id,owner,platform,operation,state,course_id,recruit_id,course_name,created_at,updated_at) VALUES(?1,?2,'zhs','study','completed',?3,'班级/甲','模拟课程',?4,?4)", id!, user!, course!, nowSeconds());
+    runtime.db.run("INSERT INTO task_events(task_id,kind,detail,created_at) VALUES(?1,'info',?2,?3)", id!, `记录 ${id}`, nowSeconds());
+  }
+  const headers = { cookie: `cf_session=${session.token}` };
+  for (const url of ['/api/tasks/plain-a/export', '/api/tasks/plain-a/logs', '/api/history/export']) {
+    const response = await runtime.app.inject({ url, headers });
+    assert.equal(response.statusCode, 200); assert.match(String(response.headers['content-type']), /text\/plain/);
+    assert.match(String(response.headers['content-disposition']), /\.log"$/); assert.equal(response.headers['cache-control'], 'no-store');
+    assert.doesNotMatch(response.body, /记录 plain-other/);
+  }
+  for (const format of ['json', 'csv', 'md', 'docx']) {
+    for (const url of ['/api/tasks/plain-a/export', '/api/history/export']) assert.equal((await runtime.app.inject({ url: `${url}?format=${format}`, headers })).statusCode, 400);
+  }
+  const query = new URLSearchParams({ platform: 'zhs', course: '课程/一', recruit: '班级/甲' });
+  const filtered = await runtime.app.inject({ url: '/api/history/export?' + query, headers });
+  assert.match(filtered.body, /记录 plain-a/); assert.doesNotMatch(filtered.body, /记录 plain-b|记录 plain-other/);
 });

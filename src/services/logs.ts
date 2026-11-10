@@ -7,7 +7,7 @@ import type { Db } from '../core/db.ts';
 
 const DAY = 86400;
 const LIMIT = 20 * 1024 * 1024;
-export type LogKind = 'app' | 'audit' | 'tasks';
+export type LogKind = 'app' | 'audit' | 'tasks' | 'site_tasks';
 type Entry = { time: number; level: string; message: string };
 
 export function logRange(from: unknown, to: unknown) {
@@ -72,15 +72,18 @@ export class LogStore {
   }
 }
 
-export function taskLogs(db: Db, start: number, end: number, scope: { owner?: string; task?: string } = {}): string {
+export function taskLogs(db: Db, start: number, end: number, scope: { owner?: string; task?: string; platform?: string; course?: string; recruit?: string } = {}): string {
   const parameters: (string | number)[] = [start, end];
   const conditions = ['e.created_at>=?1', 'e.created_at<=?2'];
   if (scope.owner) { parameters.push(scope.owner); conditions.push(`t.owner=?${parameters.length}`); }
   if (scope.task) { parameters.push(scope.task); conditions.push(`t.id=?${parameters.length}`); }
-  const rows = db.raw.prepare(`SELECT e.created_at,e.task_id,e.kind,e.detail,t.platform,t.operation FROM task_events e JOIN tasks t ON t.id=e.task_id WHERE ${conditions.join(' AND ')} ORDER BY e.created_at,e.id`).iterate(...parameters);
+  for (const [key, column] of [['platform', 'platform'], ['course', 'course_id'], ['recruit', 'recruit_id']] as const) {
+    if (scope[key]) { parameters.push(scope[key]!); conditions.push(`t.${column}=?${parameters.length}`); }
+  }
+  const rows = db.raw.prepare(`SELECT e.created_at,e.task_id,e.kind,e.detail,t.platform,t.operation,t.course_name,u.username FROM task_events e JOIN tasks t ON t.id=e.task_id JOIN users u ON u.id=t.owner WHERE ${conditions.join(' AND ')} ORDER BY e.created_at,e.id`).iterate(...parameters);
   const output: string[] = []; let size = 0;
   for (const row of rows) {
-    const text = line({ time: Number(row.created_at), level: String(row.kind), message: `[${row.platform}/${row.operation}] 任务 ${row.task_id}：${row.detail}` });
+    const text = line({ time: Number(row.created_at), level: String(row.kind), message: `[${row.username} / ${row.platform}/${row.operation}] ${row.course_name || '课程'} · 任务 ${row.task_id}：${row.detail}` });
     if (size + Buffer.byteLength(text) > LIMIT) return output.join('') + overLimit;
     output.push(text); size += Buffer.byteLength(text);
   }
