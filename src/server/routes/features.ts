@@ -111,15 +111,4 @@ export function registerFeaturesRoutes(app: FastifyInstance, c: ServerContext): 
     const data = format === 'csv' ? csv([{ 课程: found.name, ...result.scores, 习惯分: result.habit, 互动分: result.interactive }]) : JSON.stringify({ course: found, ...result }, null, 2);
     return reply.header('content-disposition', `attachment; filename="courseflow-scores.${format === 'csv' ? 'csv' : 'json'}"`).type(format === 'csv' ? 'text/csv; charset=utf-8' : 'application/json').send(data);
   });
-  app.get<{ Querystring: { format?: string } }>('/api/history/export', async (request, reply) => {
-    const who = requireIdentity(request); const tasks = c.jobs.list(who.user.id); const format = request.query.format ?? 'json';
-    const data = format === 'csv' ? csv(tasks.map((t) => ({ 课程: t.course_name, 类型: t.operation, 状态: t.state, 进度: t.progress, 说明: t.detail, 更新时间: new Date(t.updated_at * 1000).toISOString() }))) : JSON.stringify({ tasks }, null, 2);
-    return reply.header('content-disposition', `attachment; filename="courseflow-history.${format === 'csv' ? 'csv' : 'json'}"`).type(format === 'csv' ? 'text/csv; charset=utf-8' : 'application/json').send(data);
-  });
-  app.get<{ Params: { id: string }; Querystring: { format?: string } }>('/api/tasks/:id/export', async (request, reply) => {
-    const who = requireIdentity(request); const task = c.jobs.get(who.user.id, request.params.id);
-    const details = c.jobs.details(who.user.id, task.id);
-    const result = await exportReport({ task, workflow: details.workflow, events: c.jobs.events(who.user.id, task.id) }, request.query.format ?? 'md', c.config.publicUrl, (url) => c.manager.image(who.user.id, task.platform, url));
-    return reply.header('content-disposition', `attachment; filename="courseflow-${task.id}.${result.extension}"`).type(result.type).send(result.data);
-  });
 }

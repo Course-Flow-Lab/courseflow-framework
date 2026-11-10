@@ -1,0 +1,110 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+import { createUser, createSession, verifyPassword } from '../src/core/auth.ts';
+import { nowSeconds } from '../src/core/domain.ts';
+import { savePreferences } from '../src/core/preferences.ts';
+import { effectiveTaskPolicy } from '../src/core/task-policy.ts';
+import { boot, call, setupAdmin } from './support/harness.ts';
+
+test('管理接口隔离成员权限、CSRF、用户密码和管理员身份', async t => {
+  const { runtime } = await boot(); t.after(() => runtime.close());
+  const admin = await setupAdmin(runtime);
+  const me = (await call(runtime, { url: '/api/me', session: admin })).body.user;
+  const created = await call(runtime, { method: 'POST', url: '/api/admin/users', session: admin, body: { username: 'member', password: 'synthetic-member-password' } });
+  assert.equal(created.status, 200);
+  const member = created.body.user, session = createSession(runtime.db, member.id, nowSeconds());
+  for (const url of ['/api/admin/users', '/api/admin/overview', '/api/admin/tasks', '/api/admin/settings', '/api/admin/tasks/missing']) {
+    assert.equal((await call(runtime, { url })).status, 401);
+    assert.equal((await call(runtime, { url, session })).status, 403);
+  }
+  for (const url of ['/api/admin/users', '/api/admin/settings', `/api/admin/users/${member.id}/status`, `/api/admin/users/${member.id}/password`, '/api/admin/tasks/missing/stop']) {
+    assert.equal((await call(runtime, { url, method: 'POST', session, body: {} })).status, 403);
+    assert.equal((await runtime.app.inject({ method: 'POST', url, headers: { cookie: `cf_session=${admin.token}` }, payload: {} })).statusCode, 403);
+  }
+  const users = (await call(runtime, { url: '/api/admin/users', session: admin })).body;
+  assert.equal(users.users.length, 2);
+  assert.doesNotMatch(JSON.stringify(users), /password_hash|synthetic-member-password|csrf/);
+  const selfDisable = await call(runtime, { method: 'POST', url: `/api/admin/users/${me.id}/status`, session: admin, body: { disabled: true } });
+  assert.equal(selfDisable.status, 400);
+  assert.equal((await call(runtime, { method: 'POST', url: `/api/admin/users/${me.id}/role`, session: admin, body: { role: 'user' } })).status, 400);
+  assert.equal((await call(runtime, { method: 'POST', url: `/api/admin/users/${member.id}/role`, session: admin, body: { role: 'admin' } })).status, 200);
+  assert.equal((await call(runtime, { url: '/api/admin/settings', session })).status, 200);
+  assert.equal((await call(runtime, { method: 'POST', url: `/api/admin/users/${member.id}/role`, session: admin, body: { role: 'user' } })).status, 200);
+  assert.equal((await call(runtime, { url: '/api/admin/settings', session })).status, 403);
+  assert.equal((await call(runtime, { method: 'POST', url: `/api/admin/users/${member.id}/password`, session: admin, body: { password: 'short' } })).status, 400);
+  assert.equal((await call(runtime, { method: 'POST', url: `/api/admin/users/${member.id}/password`, session: admin, body: { password: 'synthetic-reset-password' } })).status, 200);
+  assert.equal((await call(runtime, { url: '/api/me', session })).status, 401);
+  const hash = runtime.db.get<{ password_hash: string }>('SELECT password_hash FROM users WHERE id=?1', member.id)!.password_hash;
+  assert.equal(await verifyPassword('synthetic-reset-password', hash), true);
+  assert.equal(await verifyPassword('synthetic-member-password', hash), false);
+  assert.equal((await call(runtime, { method: 'POST', url: '/api/auth/login', body: { username: 'member', password: 'synthetic-reset-password' } })).status, 200);
+  const audit = await runtime.logs.export('audit', nowSeconds() - 60, nowSeconds() + 60);
+  assert.match(audit, /重置用户密码|创建用户/);
+  assert.doesNotMatch(audit, /synthetic-reset-password|synthetic-member-password/);
+});
+
+test('全站任务分页、跨用户控制和日志下载保持普通用户的所有权边界', async t => {
+  const { runtime } = await boot(); t.after(() => runtime.close());
+  const admin = await setupAdmin(runtime);
+  const member = await createUser(runtime.db, 'task-member', 'synthetic-task-member-password', 'user', nowSeconds());
+  const session = createSession(runtime.db, member.id, nowSeconds());
+  for (let i = 0; i < 105; i++) runtime.db.run("INSERT INTO tasks(id,owner,platform,operation,state,course_id,recruit_id,course_name,created_at,updated_at) VALUES(?1,?2,'sim','study','completed','模拟/课程','班级','模拟课程',?3,?3)", `task-${i}`, member.id, nowSeconds());
+  runtime.db.run("UPDATE tasks SET state='queued' WHERE id IN ('task-0','task-1')");
+  runtime.db.run("INSERT INTO task_events(task_id,kind,detail,created_at) VALUES('task-0','info','成员任务记录',?1)", nowSeconds());
+  const result = await call(runtime, { url: '/api/admin/tasks?state=completed', session: admin });
+  assert.equal(result.body.total, 103); assert.equal(result.body.tasks.length, 100);
+  assert.equal(result.body.tasks[0].username, 'task-member');
+  assert.equal((await call(runtime, { url: '/api/admin/tasks?state=completed&offset=100', session: admin })).body.tasks.length, 3);
+  assert.equal((await call(runtime, { url: '/api/admin/tasks?state=oops', session: admin })).status, 400);
+  assert.equal((await call(runtime, { url: '/api/admin/tasks?offset=-1', session: admin })).status, 400);
+  assert.equal((await call(runtime, { url: '/api/tasks/task-0', session: admin })).status, 404);
+  assert.equal((await call(runtime, { url: '/api/admin/tasks/task-0', session })).status, 403);
+  assert.equal((await call(runtime, { method: 'POST', url: '/api/admin/tasks/task-0/move', session: admin, body: { direction: 'down' } })).status, 200);
+  assert.equal((await call(runtime, { method: 'POST', url: '/api/admin/tasks/task-0/pause', session: admin })).body.task.state, 'paused');
+  const detail = (await call(runtime, { url: '/api/admin/tasks/task-0', session: admin })).body;
+  assert.ok(detail.events.some((event: any) => event.kind === 'admin'));
+  assert.equal(detail.workflow, undefined);
+  const download = await runtime.app.inject({ url: '/api/admin/tasks/task-0/logs', headers: { cookie: `cf_session=${admin.token}` } });
+  assert.equal(download.statusCode, 200); assert.match(String(download.headers['content-type']), /text\/plain/); assert.match(download.body, /成员任务记录/);
+  assert.equal((await call(runtime, { method: 'POST', url: `/api/admin/users/${member.id}/status`, session: admin, body: { disabled: true } })).status, 200);
+  assert.equal(runtime.jobs.get(member.id, 'task-1').state, 'paused');
+  assert.equal((await call(runtime, { url: '/api/me', session })).status, 401);
+  assert.equal((await call(runtime, { method: 'POST', url: '/api/admin/tasks/task-1/resume', session: admin })).status, 409);
+  assert.equal((await call(runtime, { method: 'POST', url: `/api/admin/users/${member.id}/status`, session: admin, body: { disabled: false } })).status, 200);
+  assert.equal(runtime.jobs.get(member.id, 'task-1').state, 'paused', '启用用户不自动重放任务');
+  assert.equal((await call(runtime, { method: 'POST', url: `/api/admin/users/${member.id}/stop-tasks`, session: admin })).body.stopped, 2);
+  assert.equal(runtime.jobs.get(member.id, 'task-0').state, 'cancelled');
+});
+
+test('站点与用户并发限制实际控制模拟任务调度', async t => {
+  const { runtime } = await boot();
+  const admin = await setupAdmin(runtime), owner = (await call(runtime, { url: '/api/me', session: admin })).body.user.id;
+  runtime.manager.install(fileURLToPath(new URL('../modules/simulator', import.meta.url)));
+  const login = await call(runtime, { method: 'POST', url: '/api/platforms/sim/login', session: admin });
+  await call(runtime, { method: 'POST', url: `/api/platforms/sim/login/${login.body.challenge.id}/poll`, session: admin });
+  savePreferences(runtime.db, owner, { concurrency: 3, parallel_study: true });
+  const gate = Promise.withResolvers<Record<string, unknown>>();
+  t.after(async () => { gate.resolve({ status: 'completed' }); await runtime.close(); });
+  runtime.manager.studyStep = async () => gate.promise;
+  assert.equal((await call(runtime, { method: 'POST', url: '/api/admin/settings', session: admin, body: { max_concurrency: 0 } })).status, 400);
+  await call(runtime, { method: 'POST', url: '/api/admin/settings', session: admin, body: { max_concurrency: 1, parallel_study: false } });
+  assert.deepEqual(effectiveTaskPolicy(runtime.db, owner), { concurrency: 1, parallel_study: false });
+  const visible = (await call(runtime, { url: '/api/settings', session: admin })).body.task_policy;
+  assert.deepEqual(visible, { limit: 1, parallel_study: false, effective_concurrency: 1 });
+  const courses = await runtime.manager.courses(owner, 'sim');
+  const units = await runtime.manager.units(owner, 'sim', courses[0]!);
+  runtime.manager.units = async () => units;
+  const first = runtime.jobs.create(owner, { platform: 'sim', course: courses[0]!, unit_ids: ['1001-u1'], operation: 'study' });
+  const second = runtime.jobs.create(owner, { platform: 'sim', course: courses[1]!, unit_ids: ['1001-u1'], operation: 'study' });
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(runtime.jobs.get(owner, first.id).state, 'running');
+  assert.equal(runtime.jobs.get(owner, second.id).state, 'queued');
+  await call(runtime, { method: 'POST', url: `/api/admin/users/${owner}/limit`, session: admin, body: { limit: 2 } });
+  await call(runtime, { method: 'POST', url: '/api/admin/settings', session: admin, body: { parallel_study: true } });
+  const deadline = Date.now() + 3000;
+  while (runtime.jobs.get(owner, second.id).state !== 'running' && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(runtime.jobs.get(owner, second.id).state, 'running');
+  await call(runtime, { method: 'POST', url: `/api/admin/users/${owner}/limit`, session: admin, body: { limit: null } });
+  assert.equal(effectiveTaskPolicy(runtime.db, owner).concurrency, 1);
+});
