@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveHeaderCookies, type Cookie } from '../src/modules/net.ts';
+import { resolveHeaderCookies, performFetch, type Cookie } from '../src/modules/net.ts';
+import { ModuleManager } from '../src/modules/manager.ts';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const NOW = 1_700_000_000;
 
@@ -26,6 +28,38 @@ const jar: Cookie[] = [
 
 const missingCookie = (error: unknown) =>
   (error as { code?: string }).code === 'platform_login_expired';
+
+test('network redirects and response bodies share a single timeout budget', async t => {
+  const signals: AbortSignal[] = [];
+  t.mock.method(globalThis, 'fetch', async (_url: URL, init: RequestInit) => {
+    const signal = init.signal!;
+    signals.push(signal);
+    if (signals.length === 1) return new Response(null, { status: 302, headers: { location: '/next' } });
+    return new Response(new ReadableStream({
+      start(controller) {
+        signal.addEventListener('abort', () => controller.error(signal.reason), { once: true });
+      },
+    }));
+  });
+  // Keep the test process alive while AbortSignal's unref'ed timer expires.
+  const keepAlive = delay(500);
+  await assert.rejects(performFetch({ method: 'GET', url: 'https://chaoxing.com/start', headers: {}, body: null },
+    { allow: ['chaoxing.com'], cookies: [], token: '', now: NOW, timeoutMs: 30 }), { name: 'TimeoutError' });
+  assert.equal(signals.length, 2);
+  assert.equal(signals[0], signals[1], 'redirects must not reset the deadline');
+  assert.equal(signals[0]!.aborted, true);
+  await keepAlive;
+});
+
+test('host network timeout is validated before making a request', async t => {
+  const manager = Object.create(ModuleManager.prototype);
+  manager.sessions = { resolveFetch: () => ({}) };
+  t.mock.method(globalThis, 'fetch', async () => { assert.fail('invalid budget must not reach the network'); });
+  for (const timeout_ms of [0, -1, 25001, 1.5, '1000']) {
+    await assert.rejects(manager.hostFetch('cx', { session: 'synthetic', method: 'GET', url: 'https://chaoxing.com/', timeout_ms }),
+      (error: any) => error.code === 'invalid_params');
+  }
+});
 
 test('resolves a cookie placeholder in a request header', () => {
   const headers = resolveHeaderCookies(

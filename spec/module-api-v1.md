@@ -179,13 +179,16 @@ Node.js 使用权限模型限制文件、网络和子进程。二进制直接作
   "body":{"key":"value"},
   "encoding":"json",
   "stage":"save_study",
-  "commit":true
+  "commit":true,
+  "timeout_ms":10000
 }
 ```
 
 结果为 `{status,headers,body}`，`body` 是 UTF-8 字符串。编码支持 `raw/json/form/query`；阶段为 `read/open_study/save_study/submit`，默认 `read`。用户启用夜间暂停时，非只读阶段在北京时间 23:00–07:00 拒绝；关闭后按正常任务权限执行。
 
 宿主注入对应会话的 Cookie 和令牌，拒绝模块设置 Cookie、Host、Content-Length，限制重定向次数，并在每次跳转前重新检查域名与任务状态。响应最多八 MB。401 映射为登录过期，403／418／429 映射为平台验证。
+
+可选 `timeout_ms` 为 1–25000 的整数毫秒，省略时为 25000。连接、全部重定向和响应体共用这一个预算；跳转不会重新计时。模块可为可选统计接口设置较短预算，失败后退回主接口；同一模块调用中的多次请求仍应留在宿主公布的 `call_timeout_ms` 内。平台写入超时表示结果未知，不能自动重发。
 
 宿主保存 Cookie 的主机作用范围：没有 `Domain` 属性时只匹配原主机，显式 `Domain` 时匹配该域及子域。传入 Chromium 时保留这一区别，域 Cookie 使用前导点；旧会话缺少 `host_only` 字段时沿用原有的域匹配语义。模块不能读取 Cookie 容器。
 
