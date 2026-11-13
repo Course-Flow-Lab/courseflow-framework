@@ -180,6 +180,7 @@ export async function performFetch(
     token: string;
     now: number;
     binary?: boolean;
+    timeoutMs?: number;
     beforeRequest?: () => void;
     signal?: AbortSignal;
   },
@@ -204,8 +205,12 @@ export async function performFetch(
   let current = url;
   let method = request.method.toUpperCase();
   let body = request.body;
+  // 所有跳转和响应体共用预算，避免一次请求越过模块调用的超时上限。
+  const deadline = AbortSignal.timeout(options.timeoutMs ?? 25_000);
+  const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    signal.throwIfAborted();
     options.beforeRequest?.();
     const headers = resolveHeaderCookies(request.headers, jar, current, options.now);
     const cookie = cookieHeaderFor(jar, current, options.now);
@@ -218,7 +223,7 @@ export async function performFetch(
       headers,
       body: method === 'GET' || method === 'HEAD' ? undefined : (body ?? undefined),
       redirect: 'manual',
-      signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(25_000)]) : AbortSignal.timeout(25_000),
+      signal,
     });
 
     const setCookies = response.headers.getSetCookie?.() ?? [];

@@ -1,6 +1,6 @@
 {
   "name": "courseflow-framework",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "type": "module",
   "description": "Courseflow 后端运行时、HTTP API 与平台模块宿主",

@@ -26,20 +26,53 @@ test('redirects outside the manifest remain blocked', async t => {
   await assert.rejects(performFetch({ method: 'GET', url: 'https://chaoxing.com/', headers: {}, body: null }, { allow: ['*.chaoxing.com'], cookies: [], token: '', now: 0 }), /未授权/);
 });
 
-test('missing course progress uses known directory states and preserves platform totals', async () => {
-  const courses = [{ id: 'known', progress: 37, outline_available: true }, { id: 'missing', progress: null, outline_available: true }, { id: 'unknown', progress: null, outline_available: true }, { id: 'failed', progress: null, outline_available: true }];
+test('course lists reuse explicit directory progress without scanning other courses', async () => {
+  const courses = [{ id: 'known', progress: 37, outline_available: true }, { id: 'missing', progress: null, outline_available: true }, { id: 'unknown', progress: null, outline_available: true }];
   const manager = Object.create(ModuleManager.prototype);
   manager.directoryProgress = new Map();
   manager.requireSession = () => 'synthetic';
-  manager.catalog = async () => ({ courses });
-  manager.units = async (_owner: string, _platform: string, course: { id: string }) => {
-    if (course.id === 'failed') throw Error('offline');
-    return course.id === 'unknown' ? [{ state: 'unknown' }] : [{ state: 'completed' }, { state: 'in_progress' }];
+  const scanned: string[] = [];
+  manager.catalog = async (_platform: string, method: string, params: any) => {
+    if (method === 'catalog.courses') return { courses: structuredClone(courses) };
+    scanned.push(params.course.id);
+    return { units: params.course.id === 'unknown' ? [{ state: 'unknown' }] : [{ state: 'completed' }, { state: 'in_progress' }] };
   };
+  assert.equal((await manager.courses('synthetic', 'mock'))[1].progress, null);
+  assert.deepEqual(scanned, [], 'listing courses must not scan every outline');
+  await manager.units('synthetic', 'mock', courses[1]);
+  await manager.units('synthetic', 'mock', courses[2]);
   const result = await manager.courses('synthetic', 'mock');
   assert.equal(result[0].progress, 37);
   assert.equal(result[1].progress, 50);
   assert.equal(result[1].progress_source, 'units');
   assert.equal(result[2].progress, null);
-  assert.equal(result[3].progress, null);
+  assert.deepEqual(scanned, ['missing', 'unknown']);
+  manager.requireSession = () => 'new-connection';
+  assert.equal((await manager.courses('synthetic', 'mock'))[1].progress, null);
+});
+
+test('concurrent catalog readers share the scan and retry after failure', async () => {
+  const manager = Object.create(ModuleManager.prototype);
+  manager.catalogCalls = new Map();
+  manager.sessions = { resolveFetch() {} };
+  const pages: any[] = [];
+  let finish!: (value: any) => void;
+  manager.call = async (_platform: string, _method: string, params: any) => {
+    pages.push(params);
+    if (!params.cursor) return new Promise(resolve => { finish = resolve; });
+    return { units: [{ id: 'second' }] };
+  };
+  const read = () => manager.catalog('cx', 'catalog.units', { session: 'synthetic', course: { id: 'one' } }, 'units');
+  const first = read(), second = read();
+  assert.equal(pages.length, 1);
+  finish({ units: [{ id: 'first' }], next_cursor: 'next' });
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(pages.length, 2);
+  assert.deepEqual(a.units.map((unit: any) => unit.id), ['first', 'second']);
+  a.units[0].id = 'changed';
+  assert.equal(b.units[0].id, 'first', 'callers must not share mutable data');
+  manager.call = async () => { throw Error('synthetic network failure'); };
+  await assert.rejects(read(), /synthetic network failure/);
+  manager.call = async () => ({ units: [] });
+  assert.deepEqual((await read()).units, []);
 });

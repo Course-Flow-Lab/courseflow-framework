@@ -46,6 +46,7 @@ const RESTART_BACKOFF_MS = [1000, 2000, 5000, 15000, 30000];
 
 export class ModuleManager {
   private directoryProgress = new Map<string, { at: number; value: number | null }>();
+  private catalogCalls = new Map<string, Promise<Record<string, unknown>>>();
   private db: Db;
   private vault: Vault;
   private sessions: Sessions;
@@ -460,24 +461,14 @@ export class ModuleManager {
     if (!Array.isArray(result?.courses)) {
       throw new AppError(502, 'module_protocol_error', '模块没有返回课程列表');
     }
-    // 平台列表可能省略总进度，目录只读回读失败不阻断课程列表。
+    // 列表只复用已读取的目录进度，不能隐式扫描每门课程。
     for (const course of result.courses) {
       if (course.progress != null || !course.outline_available) continue;
       const key = JSON.stringify([owner, platform, handle, course.id, course.recruit_id]);
       const cached = this.directoryProgress.get(key);
-      if (cached && Date.now() - cached.at < 60_000) {
-        if (cached.value !== null) { course.progress = cached.value; course.progress_source = 'units'; }
-        continue;
+      if (cached && Date.now() - cached.at < 60_000 && cached.value !== null) {
+        course.progress = cached.value; course.progress_source = 'units';
       }
-      try {
-        const units = await this.units(owner, platform, course);
-        if (units.length && units.every(unit => unit.state !== 'unknown')) {
-          course.progress = 100 * units.filter(unit => unit.state === 'completed').length / units.length;
-          course.progress_source = 'units';
-        }
-      } catch { /* 保留未知进度，由目录页面显示具体错误。 */ }
-      if (this.directoryProgress.size >= 1000) this.directoryProgress.clear();
-      this.directoryProgress.set(key, { at: Date.now(), value: course.progress ?? null });
     }
     return result.courses;
   }
@@ -491,6 +482,11 @@ export class ModuleManager {
     if (!Array.isArray(result?.units)) {
       throw new AppError(502, 'module_protocol_error', '模块没有返回目录');
     }
+    const units = result.units;
+    const value = units.length && units.every(unit => unit.state !== 'unknown')
+      ? 100 * units.filter(unit => unit.state === 'completed').length / units.length : null;
+    if (this.directoryProgress.size >= 1000) this.directoryProgress.clear();
+    this.directoryProgress.set(JSON.stringify([owner, platform, handle, course.id, course.recruit_id]), { at: Date.now(), value });
     return result.units;
   }
 
@@ -569,7 +565,16 @@ export class ModuleManager {
     return runner.call(method, params);
   }
 
-  private async catalog(platform: string, method: string, params: Record<string, unknown>, field: string): Promise<Record<string, unknown>> {
+  private catalog(platform: string, method: string, params: Record<string, unknown>, field: string): Promise<Record<string, unknown>> {
+    const key = JSON.stringify([platform, method, params]);
+    const pending = this.catalogCalls.get(key);
+    if (pending) return pending.then(result => structuredClone(result));
+    const work = this.readCatalog(platform, method, params, field).finally(() => { this.catalogCalls.delete(key); });
+    this.catalogCalls.set(key, work);
+    return work.then(result => structuredClone(result));
+  }
+
+  private async readCatalog(platform: string, method: string, params: Record<string, unknown>, field: string): Promise<Record<string, unknown>> {
     const items: unknown[] = [];
     const seen = new Set<string>();
     let cursor: unknown = undefined;
@@ -692,6 +697,10 @@ export class ModuleManager {
       throw badRequest('cw.net.fetch 参数不完整', 'invalid_params');
     }
     const entry = this.sessions.resolveFetch(session, moduleId);
+    const timeoutMs = params.timeout_ms;
+    if (timeoutMs !== undefined && (typeof timeoutMs !== 'number' || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 25_000)) {
+      throw badRequest('网络请求 timeout_ms 必须是 1–25000 的整数', 'invalid_params');
+    }
     const row = this.requireRow(moduleId);
     const manifest = JSON.parse(row.manifest) as Manifest;
 
@@ -748,6 +757,7 @@ export class ModuleManager {
           token: entry.token,
           now: nowSeconds(),
           binary: params.binary === true,
+          timeoutMs: timeoutMs as number | undefined,
           signal: entry.job ? this.jobSignals.get(entry.job.id)?.signal : undefined,
           beforeRequest: () => {
             this.sessions.resolveFetch(session, moduleId);
