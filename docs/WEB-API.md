@@ -52,7 +52,7 @@ async function close() {
 
 当公开地址为本机地址时，来源检查允许 `localhost`、`127.0.0.1` 与 `[::1]` 在相同协议及端口下互通；其他站点仍须匹配配置的公开地址。Cookie 和 CSRF 检查保持启用。
 
-课程列表未提供进度时，宿主只复用显式读取目录后缓存的进度，不在获取课程列表时扫描全部课程。读取目录且全部单元状态已知时，以已完成单元数除以总单元数缓存 `progress`，列表附加 `progress_source: "units"`。此值是目录完成度，不代表平台成绩或视频观看时长。结果按用户、平台会话和课程缓存一分钟；没有缓存或存在未知状态时保留空进度。相同会话、方法与课程的并发目录请求共用一次分页扫描；失败后可重新查询。
+课程列表未提供进度时，宿主只复用显式读取目录后缓存的进度，不在获取课程列表时扫描全部课程。目录接口在首次响应的 `course` 中即附加 `unit_progress: {completed,total,unknown}`；全部单元状态已知且非空时，以已完成单元数除以总单元数提供 `progress` 和 `progress_source: "units"`。此值是目录完成度，不代表平台成绩或视频观看时长；平台已提供的百分比（含 0）保持优先。存在未知状态时保留完成数量，不推断完整百分比。结果按用户、平台会话和课程缓存一分钟，供后续课程列表复用；前端将已读取的课程对象同步回同一平台、课程及班级的卡片。相同会话、方法与课程的并发目录请求共用一次分页扫描；失败后可重新查询。
 
 
 ## 站点管理
@@ -70,12 +70,13 @@ async function close() {
 | `POST /api/admin/users/:id/limit` | 设置 `limit: 1–8`，或 `null` 恢复站点默认 |
 | `POST /api/admin/users/:id/pause-tasks`、`stop-tasks` | 暂停或停止该用户的全部未结束任务 |
 | `GET/POST /api/admin/settings` | 读取或保存 `max_concurrency`、`parallel_study` |
-| `GET /api/admin/tasks` | `owner`、`state` 过滤；`offset` 分页，每页 100 项，返回 `total`、`offset`、`limit` |
+| `GET /api/admin/tasks` | `owner`、`state` 过滤；`sort: updated / created / oldest / state`，默认最近更新；`offset` 分页，每页 100 项，返回 `total`、`offset`、`limit`、`sort` |
 | `GET /api/admin/tasks/:id` | 任务概况和最近事件，不返回作答正文或凭据 |
+| `DELETE /api/admin/tasks/:id` | 删除任务及其本站输入、队列与事件；执行中的任务先停止，仍在退出的执行器与未核对交卷结果拒绝删除 |
 | `POST /api/admin/tasks/:id/:action` | `pause`、`resume`、`stop` 或 `move`；排序提供 `direction: up 或 down` |
 | `GET /api/admin/tasks/:id/logs` | 下载该任务的纯文本日志 |
 
-管理任务操作同时记录操作者与任务事件。管理员上限和并行许可存于现有 `site_settings`，无需数据库结构或模块协议迁移。默认值保留原有 1–8 项个人并发设置；调度器对停用账号拒绝创建和继续任务。
+管理任务操作记录操作者；删除记录保留在审计日志，独立写入凭证和交卷锁不随任务清除。删除只作用于本站，不删除平台进度或作答。排序在分页前完成，同值按创建时间和任务标识稳定排列，队列上移下移仍只控制所属用户的执行顺序。管理员上限和并行许可存于现有 `site_settings`，无需数据库结构或模块协议迁移。默认值保留原有 1–8 项个人并发设置；调度器对停用账号拒绝创建和继续任务。
 
 ## 纯文本日志
 

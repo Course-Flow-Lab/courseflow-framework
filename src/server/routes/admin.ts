@@ -9,6 +9,12 @@ import { taskLogs } from '../../services/logs.ts';
 type Target = { id: string; username: string; role: Role; disabled: number };
 const states = ['queued', 'running', 'paused', 'completed', 'failed', 'cancelled'];
 const active = "('queued','running','paused')";
+const taskSorts: Record<string, string> = {
+  updated: 'updated_at DESC,created_at DESC,id',
+  created: 'created_at DESC,id',
+  oldest: 'created_at ASC,id',
+  state: "CASE state WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'paused' THEN 2 WHEN 'failed' THEN 3 WHEN 'completed' THEN 4 ELSE 5 END,updated_at DESC,created_at DESC,id",
+};
 
 export function registerAdminRoutes(app: FastifyInstance, c: ServerContext): void {
   const { db, jobs, access, logs } = c;
@@ -127,10 +133,12 @@ export function registerAdminRoutes(app: FastifyInstance, c: ServerContext): voi
     audit(who.user.id, '修改站点任务策略', 'site');
     return { settings };
   });
-  app.get<{ Querystring: { owner?: string; state?: string; offset?: string } }>('/api/admin/tasks', async (request, reply) => {
+  app.get<{ Querystring: { owner?: string; state?: string; offset?: string; sort?: string } }>('/api/admin/tasks', async (request, reply) => {
     access.requireIdentity(request, { admin: true }); reply.header('cache-control', 'no-store');
     const query = request.query, offset = Number(query.offset ?? 0);
     if (!Number.isSafeInteger(offset) || offset < 0) throw badRequest('分页位置无效');
+    const sort = query.sort ?? 'updated';
+    if (!Object.hasOwn(taskSorts, sort)) throw badRequest('任务排序方式无效');
     const params: (string | number)[] = [], conditions: string[] = [];
     if (query.owner) { params.push(user(query.owner).id); conditions.push(`owner=?${params.length}`); }
     if (query.state) {
@@ -140,13 +148,20 @@ export function registerAdminRoutes(app: FastifyInstance, c: ServerContext): voi
     const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
     const total = db.get<{ total: number }>('SELECT count(*) AS total FROM tasks' + where, ...params)!.total;
     params.push(offset);
-    const rows = db.all<{ id: string }>(`SELECT id FROM tasks${where} ORDER BY CASE WHEN state IN ${active} THEN 0 ELSE 1 END, created_at DESC,id LIMIT 100 OFFSET ?${params.length}`, ...params);
-    return { tasks: rows.map(row => task(row.id)), total, offset, limit: 100 };
+    const rows = db.all<{ id: string }>(`SELECT id FROM tasks${where} ORDER BY ${taskSorts[sort]} LIMIT 100 OFFSET ?${params.length}`, ...params);
+    return { tasks: rows.map(row => task(row.id)), total, offset, limit: 100, sort };
   });
   app.get<{ Params: { id: string } }>('/api/admin/tasks/:id', async (request, reply) => {
     access.requireIdentity(request, { admin: true }); reply.header('cache-control', 'no-store');
     const found = task(request.params.id);
     return { task: found, events: jobs.events(found.owner, found.id) };
+  });
+  app.delete<{ Params: { id: string } }>('/api/admin/tasks/:id', async (request) => {
+    const who = access.requireIdentity(request, { admin: true, write: true });
+    const found = task(request.params.id);
+    jobs.remove(found.owner, found.id);
+    audit(who.user.id, '删除站点任务', found.id);
+    return { deleted: true, id: found.id };
   });
   app.post<{ Params: { id: string; action: string }; Body: { direction?: string } }>('/api/admin/tasks/:id/:action', async (request) => {
     const who = access.requireIdentity(request, { admin: true, write: true }), found = task(request.params.id);
