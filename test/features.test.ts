@@ -99,6 +99,31 @@ test('人工补答保留原答案，确认后交卷，并加密保存可导出�
   assert.equal(response.statusCode, 200); assert.match(response.body, /平台已确认/); assert.match(response.body, /95 分/); assert.match(String(response.headers['content-type']), /text\/plain/);
 });
 
+test('模型的生物多选答案按标签生成草稿，保留已有答案并等待确认交卷', async (t) => {
+  const { runtime } = await boot(); t.after(() => runtime.close());
+  const session = await setupAdmin(runtime); const { owner, course } = await connected(runtime, session);
+  const multiple = { ...question('biology'), kind: 'multiple', options: [{ id: 'remote-101', text: 'DNA' }, { id: 'remote-102', text: 'ATP' }, { id: 'remote-103', text: '葡萄糖' }, { id: 'remote-104', text: 'RNA' }] };
+  const drafts: any[] = []; let opens = 0, generations = 0;
+  runtime.ai.generate = async () => { generations++; return generations === 1 ? '{"answer":["Z"]}' : '{"answer":["A","D"],"explanation":"DNA和RNA是生物大分子"}'; };
+  runtime.manager.invoke = async (_owner, _platform, method, params) => {
+    if (method === 'catalog.papers') return { papers: [paper] };
+    if (method === 'exam.open') { opens++; return { ready: true, attempt: { ...attempt, questions: [question('old', ['a']), multiple] } }; }
+    if (method === 'exam.write') { assert.equal(params.phase, 'draft', '没有人工确认时不得交卷'); drafts.push(params); return { done: true, cursor: 1 }; }
+    throw new Error(method);
+  };
+  const task = runtime.jobs.create(owner, { platform: 'sim', course, unit_ids: ['paper'], operation: 'answer' });
+  await waitFor(runtime, session, task.id, 'paused');
+  assert.equal((runtime.jobs.details(owner, task.id).workflow as any).phase, 'waiting_answers');
+  assert.match(runtime.jobs.get(owner, task.id).detail, /第 2 \/ 2 题/);
+  runtime.jobs.resume(owner, task.id);
+  await waitFor(runtime, session, task.id, 'paused');
+  const state = runtime.jobs.details(owner, task.id).workflow as any;
+  assert.equal(state.phase, 'waiting_submit', runtime.jobs.get(owner, task.id).detail);
+  assert.deepEqual(state.answers, { old: ['a'], biology: ['remote-101', 'remote-104'] });
+  assert.deepEqual(drafts[0].preserve_ids, ['old']);
+  assert.equal(generations, 2); assert.equal(opens, 1);
+});
+
 test('交卷结果未知时回读而不重发，人工回读也保存确认记录', async (t) => {
   const { runtime } = await boot(); t.after(() => runtime.close());
   const session = await setupAdmin(runtime); const { owner, course } = await connected(runtime, session);
