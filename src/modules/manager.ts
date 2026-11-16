@@ -45,7 +45,7 @@ export type PlatformSummary = PlatformDescriptor & {
 const RESTART_BACKOFF_MS = [1000, 2000, 5000, 15000, 30000];
 
 export class ModuleManager {
-  private directoryProgress = new Map<string, { at: number; value: number | null }>();
+  private directoryProgress = new Map<string, { at: number; value: number | null; summary: NonNullable<Course['unit_progress']> }>();
   private catalogCalls = new Map<string, Promise<Record<string, unknown>>>();
   private db: Db;
   private vault: Vault;
@@ -463,11 +463,14 @@ export class ModuleManager {
     }
     // 列表只复用已读取的目录进度，不能隐式扫描每门课程。
     for (const course of result.courses) {
-      if (course.progress != null || !course.outline_available) continue;
+      if (!course.outline_available) continue;
       const key = JSON.stringify([owner, platform, handle, course.id, course.recruit_id]);
       const cached = this.directoryProgress.get(key);
-      if (cached && Date.now() - cached.at < 60_000 && cached.value !== null) {
-        course.progress = cached.value; course.progress_source = 'units';
+      if (cached && Date.now() - cached.at < 60_000) {
+        course.unit_progress = { ...cached.summary };
+        if (course.progress == null && cached.value !== null) {
+          course.progress = cached.value; course.progress_source = 'units';
+        }
       }
     }
     return result.courses;
@@ -483,10 +486,20 @@ export class ModuleManager {
       throw new AppError(502, 'module_protocol_error', '模块没有返回目录');
     }
     const units = result.units;
-    const value = units.length && units.every(unit => unit.state !== 'unknown')
-      ? 100 * units.filter(unit => unit.state === 'completed').length / units.length : null;
+    const summary = {
+      completed: units.filter(unit => unit.state === 'completed').length,
+      total: units.length,
+      unknown: units.filter(unit => !['completed', 'not_started', 'in_progress'].includes(unit.state)).length,
+    };
+    const value = summary.total && summary.unknown === 0 ? 100 * summary.completed / summary.total : null;
     if (this.directoryProgress.size >= 1000) this.directoryProgress.clear();
-    this.directoryProgress.set(JSON.stringify([owner, platform, handle, course.id, course.recruit_id]), { at: Date.now(), value });
+    this.directoryProgress.set(JSON.stringify([owner, platform, handle, course.id, course.recruit_id]), { at: Date.now(), value, summary });
+    course.unit_progress = { ...summary };
+    if (course.progress == null || course.progress_source === 'units') {
+      course.progress = value;
+      if (value !== null) course.progress_source = 'units';
+      else delete course.progress_source;
+    }
     return result.units;
   }
 

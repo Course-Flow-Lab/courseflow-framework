@@ -342,6 +342,20 @@ export class JobEngine {
     return this.get(owner, id);
   }
 
+  remove(owner: string, id: string): void {
+    const row = this.db.get<TaskRow>('SELECT * FROM tasks WHERE id=?1 AND owner=?2', id, owner);
+    if (!row) throw notFound('找不到这个任务');
+    if (row.state === 'running') throw conflict('task_running', '请先停止执行中的任务，再删除记录');
+    if (this.controllers.has(id)) throw conflict('task_stopping', '任务正在停止，请稍后再删除记录');
+    if (this.db.get("SELECT 1 FROM operation_locks WHERE task_id=?1 AND state IN ('pending','unknown')", id)) {
+      throw conflict('submission_unknown', '此任务的交卷结果尚未核对，请先回读确认后再删除记录');
+    }
+    // Task-owned input, queue position and events cascade. Keep the independent
+    // write ledger and operation locks so deletion cannot erase submission evidence.
+    this.db.transaction(() => this.db.run('DELETE FROM tasks WHERE id=?1 AND owner=?2', id, owner));
+    this.manager.cancelJob(id);
+  }
+
   pause(owner: string, id: string): TaskView {
     const task = this.get(owner, id);
     if (task.state === 'paused') {

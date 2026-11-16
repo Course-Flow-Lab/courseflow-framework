@@ -51,6 +51,7 @@ export type DescribeResult = {
 
 export type Course = {
   progress_source?: 'units';
+  unit_progress?: { completed: number; total: number; unknown: number };
   id: string;
   recruit_id: string;
   name: string;

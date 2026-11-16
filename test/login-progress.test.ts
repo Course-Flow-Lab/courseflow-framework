@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { matchesOrigin } from '../src/server/access.ts';
 import { performFetch } from '../src/modules/net.ts';
 import { ModuleManager } from '../src/modules/manager.ts';
+import { fileURLToPath } from 'node:url';
+import { boot, call, setupAdmin } from './support/harness.ts';
 
 test('loopback aliases require the configured protocol and port', () => {
   for (const host of ['localhost', '127.0.0.1', '[::1]']) assert.equal(matchesOrigin(`http://${host}:8100`, 'http://127.0.0.1:8100'), true);
@@ -35,20 +37,44 @@ test('course lists reuse explicit directory progress without scanning other cour
   manager.catalog = async (_platform: string, method: string, params: any) => {
     if (method === 'catalog.courses') return { courses: structuredClone(courses) };
     scanned.push(params.course.id);
-    return { units: params.course.id === 'unknown' ? [{ state: 'unknown' }] : [{ state: 'completed' }, { state: 'in_progress' }] };
+    return { units: params.course.id === 'unknown' ? [{ state: 'completed' }, { state: 'unknown' }] : [{ state: 'completed' }, { state: 'in_progress' }] };
   };
   assert.equal((await manager.courses('synthetic', 'mock'))[1].progress, null);
   assert.deepEqual(scanned, [], 'listing courses must not scan every outline');
-  await manager.units('synthetic', 'mock', courses[1]);
-  await manager.units('synthetic', 'mock', courses[2]);
+  const opened = structuredClone(courses[1]);
+  await manager.units('synthetic', 'mock', opened);
+  assert.equal(opened.progress, 50, 'the first directory response must contain the computed progress');
+  await manager.units('synthetic', 'mock', structuredClone(courses[2]));
   const result = await manager.courses('synthetic', 'mock');
   assert.equal(result[0].progress, 37);
   assert.equal(result[1].progress, 50);
   assert.equal(result[1].progress_source, 'units');
   assert.equal(result[2].progress, null);
+  assert.deepEqual(result[2].unit_progress, { completed: 1, total: 2, unknown: 1 });
   assert.deepEqual(scanned, ['missing', 'unknown']);
   manager.requireSession = () => 'new-connection';
   assert.equal((await manager.courses('synthetic', 'mock'))[1].progress, null);
+});
+
+test('目录 API 首次读取即返回完成度，保留平台百分比与部分未知状态', async t => {
+  const { runtime } = await boot(); t.after(() => runtime.close());
+  const admin = await setupAdmin(runtime);
+  const owner = (await call(runtime, { url: '/api/me', session: admin })).body.user.id;
+  runtime.manager.install(fileURLToPath(new URL('../modules/simulator', import.meta.url)));
+  const login = await call(runtime, { method: 'POST', url: '/api/platforms/sim/login', session: admin });
+  await call(runtime, { method: 'POST', url: `/api/platforms/sim/login/${login.body.challenge.id}/poll`, session: admin });
+  const course = (await runtime.manager.courses(owner, 'sim'))[0]!;
+  let states = ['completed', 'completed'], official: number | null = null;
+  (runtime.manager as any).catalog = async (_platform: string, method: string) => method === 'catalog.courses' ? { courses: [{ ...course, progress: official }] } : { units: states.map((state, index) => ({ id: String(index), state, kind: 'video' })) };
+  const url = `/api/platforms/sim/courses/${course.id}/${course.recruit_id}/units`;
+  const read = async () => (await call(runtime, { url, session: admin })).body.course;
+  let result = await read();
+  assert.equal(result.progress, 100); assert.equal(result.progress_source, 'units');
+  assert.deepEqual(result.unit_progress, { completed: 2, total: 2, unknown: 0 });
+  states = ['completed', 'unknown']; result = await read();
+  assert.equal(result.progress, null); assert.deepEqual(result.unit_progress, { completed: 1, total: 2, unknown: 1 });
+  official = 0; states = ['completed', 'completed']; result = await read();
+  assert.equal(result.progress, 0); assert.equal(result.progress_source, undefined);
 });
 
 test('concurrent catalog readers share the scan and retry after failure', async () => {
