@@ -5,9 +5,30 @@ import { validateAnswer } from '../question-bank/index.js';
 export function validAnswer(question: Question, answer: unknown): answer is string[] {
   return validateAnswer(question as Parameters<typeof validateAnswer>[0], answer);
 }
+
+const optionText = (value: string) => value.normalize('NFC').replace(/\s+/gu, ' ').trim();
+function choiceId(question: Question, value: string): string | undefined {
+  const text = value.trim().replace(/^["'“”]+|["'“”]+$/g, '');
+  if (!text) return;
+  // The prompt exposes display labels, not platform IDs. Match labels before
+  // option text: "D" must never match the D in an unrelated "DNA" option.
+  const label = /^([A-Z])(?:[.)、:])?$/i.exec(text.normalize('NFKC'));
+  if (label) return question.options[label[1]!.toUpperCase().charCodeAt(0) - 65]?.id;
+  const id = question.options.find(option => option.id === text);
+  if (id) return id.id;
+  const exact = question.options.filter(option => optionText(option.text) === optionText(text));
+  if (exact.length) return exact.length === 1 ? exact[0]!.id : undefined;
+  const labelledText = /^([A-Z])(?:[.)、:]\s*|\s+)(.+)$/i.exec(text.normalize('NFKC'));
+  if (labelledText) {
+    const option = question.options[labelledText[1]!.toUpperCase().charCodeAt(0) - 65];
+    if (option && optionText(option.text.normalize('NFKC')) === optionText(labelledText[2]!)) return option.id;
+  }
+}
+
 export function parseModelAnswer(question: Question, raw: string): { answer: string[]; explanation: string } {
   let data: any;
   try { data = JSON.parse(raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')); } catch { throw conflict('answer_format', '模型答案不是合法 JSON，需要人工检查'); }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw conflict('answer_format', '模型答案应为包含 answer 字段的 JSON 对象，需要人工检查');
   let values = Array.isArray(data.answer) ? data.answer : data.answer == null ? [] : [data.answer];
   if (question.kind === 'judge') values = values.map((v: unknown) => {
     const text = String(v).trim().toLowerCase();
@@ -15,18 +36,16 @@ export function parseModelAnswer(question: Question, raw: string): { answer: str
     if (['false', '错误', '错', 'no', '0'].includes(text)) return 'false';
     return text;
   });
-  else values = values.map((v: unknown) => String(v).trim());
+  else values = values.map((v: unknown) => ['string', 'number', 'boolean'].includes(typeof v) ? String(v).trim() : '');
   if (['single', 'multiple'].includes(question.kind)) {
-    values = values.map((value: string) => {
-      const text = value.trim().replace(/^["'“”]+|["'“”]+$/g, '');
-      if (question.options.some((o) => o.id === text)) return text;
-      const exact = question.options.find((o) => o.text.trim() === text);
-      if (exact) return exact.id;
-      const included = question.options.find((o) => text.includes(o.text) || o.text.includes(text));
-      if (included) return included.id;
-      const letter = /^([A-Z])(?:[\.\):：、\s]|$)/.exec(text);
-      if (letter) return question.options[letter[1].charCodeAt(0) - 65]?.id ?? text;
-      return text;
+    values = values.flatMap((value: string) => {
+      const id = choiceId(question, value);
+      if (id !== undefined) return [id];
+      if (question.kind === 'multiple') {
+        const labels = value.normalize('NFKC').replace(/[\s,，、;；/|+]+/gu, '');
+        if (/^[A-Z]{2,}$/i.test(labels)) return [...labels].map(label => choiceId(question, label) ?? '');
+      }
+      return [''];
     });
   }
   if (question.kind === 'blank' && question.blanks > 1 && values.length === 1) {

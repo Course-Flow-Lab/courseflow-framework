@@ -211,7 +211,7 @@ async function answer(c: WorkflowContext) {
           const result = parseModelAnswer(question, generated);
           state.answers[question.id] = result.answer; state.explanations[question.id] = result.explanation; save();
         } catch (error) {
-          c.check(); state.phase = 'waiting_answers'; save(); c.pause(`需要补答：${(error as Error).message}`); return;
+          c.check(); state.phase = 'waiting_answers'; save(); c.pause(`需要补答：第 ${attempt.questions.indexOf(question) + 1} / ${attempt.questions.length} 题：${(error as Error).message}`); return;
         }
       }
       state.phase = 'draft'; state.cursor = 0; save();
