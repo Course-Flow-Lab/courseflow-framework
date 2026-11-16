@@ -3,7 +3,7 @@ import type { Vault } from '../core/vault.ts';
 import type { ModuleManager } from '../modules/manager.ts';
 import type { Course, Unit, Question } from '../modules/protocol.ts';
 import { nowSeconds, randomId, sleep } from '../core/domain.ts';
-import { badRequest, conflict, notFound } from '../core/errors.ts';
+import { badRequest, conflict, forbidden, notFound } from '../core/errors.ts';
 import { effectiveTaskPolicy } from '../core/task-policy.ts';
 import { preferences, quietFor } from '../core/preferences.ts';
 import type { AiService } from '../services/ai.ts';
@@ -276,7 +276,9 @@ export class JobEngine {
     owner: string,
     input: { platform: string; course: Course; unit_ids: string[]; operation: string; options?: Record<string, unknown> },
   ): TaskView {
-    if (this.db.get<{ disabled: number }>('SELECT disabled FROM users WHERE id=?1', owner)?.disabled !== 0) throw conflict('user_disabled', '此用户已停用');
+    const ownerRow = this.db.get<{ disabled: number; role: string }>('SELECT disabled,role FROM users WHERE id=?1', owner);
+    if (ownerRow?.disabled !== 0) throw conflict('user_disabled', '此用户已停用');
+    if (input.operation === 'trial' && ownerRow.role !== 'admin') throw forbidden('短时试跑仅供管理员诊断使用');
     const unitIds = [...new Set(input.unit_ids)];
     if (unitIds.length === 0) throw badRequest('请先选择学习单元');
     if (unitIds.length > MAX_UNITS) throw badRequest('一次最多选择 200 个单元');
