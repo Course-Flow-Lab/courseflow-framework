@@ -23,6 +23,31 @@ const question = (id: string, answer: string[] = []) => ({ id, kind: 'single', t
 const paper = { id: 'paper', name: '模拟作业', category: '作业', available: true, done: false, can_redo: true, score: null };
 const attempt = { id: 'attempt-1', paper_id: 'paper', name: '模拟作业', questions: [question('old', ['a']), question('new')], expires_at: null };
 
+test('短时试跑仅供管理员诊断，普通成员仍可正常创建学习任务', async (t) => {
+  const { runtime } = await boot(); t.after(() => runtime.close());
+  const admin = await setupAdmin(runtime); await connected(runtime, admin);
+  const descriptor = await runtime.manager.describe('sim');
+  runtime.manager.describe = async () => ({ ...descriptor, platform: { ...descriptor.platform, operations: ['study', 'trial'] } });
+  const member = await createUser(runtime.db, 'member', 'synthetic-member-passphrase', 'user', nowSeconds());
+  const session = createSession(runtime.db, member.id, nowSeconds());
+  const login = await call(runtime, { method: 'POST', url: '/api/platforms/sim/login', session });
+  await call(runtime, { method: 'POST', url: `/api/platforms/sim/login/${login.body.challenge.id}/poll`, session });
+  const root = '/api/platforms/sim/courses/1001/9001';
+  assert.ok(!(await call(runtime, { url: '/api/bootstrap', session })).body.capabilities.jobs.includes('trial'));
+  assert.ok((await call(runtime, { url: '/api/bootstrap', session: admin })).body.capabilities.jobs.includes('trial'));
+  for (const route of ['/jobs', '/study']) {
+    const result = await call(runtime, { method: 'POST', url: root + route, session, body: { operation: 'trial', unit_ids: ['1001-u1'] } });
+    assert.equal(result.status, 403); assert.match(result.body.error.message, /管理员诊断/);
+  }
+  assert.equal(runtime.jobs.list(member.id).length, 0);
+  const study = await call(runtime, { method: 'POST', url: root + '/study', session, body: { unit_ids: ['1001-u1'] } });
+  assert.equal(study.status, 200);
+  runtime.jobs.stop(member.id, study.body.task.id);
+  const trial = await call(runtime, { method: 'POST', url: root + '/jobs', session: admin, body: { operation: 'trial', unit_ids: ['1001-u1'] } });
+  assert.equal(trial.status, 200);
+  runtime.jobs.stop((await call(runtime, { url: '/api/me', session: admin })).body.user.id, trial.body.task.id);
+});
+
 test('见面课播放器需要处理时暂停保留检查点，诊断可导出且继续后只认平台确认', async (t) => {
   const { runtime } = await boot(); t.after(() => runtime.close());
   const session = await setupAdmin(runtime); const { owner, course } = await connected(runtime, session);
