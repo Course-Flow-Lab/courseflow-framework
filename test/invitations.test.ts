@@ -163,7 +163,7 @@ test('已有版本 2 数据库原地升级保留用户，新设置和邀请码�
   old.exec('DROP TABLE invitations; DROP TABLE site_settings; PRAGMA user_version=2');
   old.close();
   const migrated = new Db(file);
-  assert.equal(migrated.get<{ user_version: number }>('PRAGMA user_version')!.user_version, 3);
+  assert.equal(migrated.get<{ user_version: number }>('PRAGMA user_version')!.user_version, 4);
   assert.equal(migrated.get<{ username: string }>('SELECT username FROM users WHERE id=?1', admin.id)!.username, 'migration-admin');
   assert.equal(registrationSettings(migrated).invitation_required, true);
   saveRegistrationSettings(migrated, false);

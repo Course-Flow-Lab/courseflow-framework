@@ -19,6 +19,7 @@ import { resolvePresentation, satisfiesRange, validateManifest } from './protoco
 import { mapPlatformStatus, mergeCookies, performFetch, type Cookie, NetError } from './net.ts';
 import { ModuleRunner } from './runner.ts';
 import { FRAMEWORK_VERSION } from '../version.ts';
+import { accountScope, platformAccounts, principalOwner } from '../core/platform-accounts.ts';
 
 export type ModuleRow = {
   id: string;
@@ -39,6 +40,7 @@ export type PlatformSummary = PlatformDescriptor & {
   connected: boolean;
   display_name: string | null;
   connected_at: number | null;
+  accounts?: Array<{ id: string; label: string; legacy: boolean; connected: boolean; display_name: string | null; connected_at: number | null }>;
   module: { name: string; version: string; sha256: string; enabled: boolean; healthy: boolean };
 };
 
@@ -233,10 +235,10 @@ export class ModuleManager {
   // ---------------------------------------------------------------- runners
 
   private async ensureRunner(id: string): Promise<ModuleRunner> {
-    const existing = this.runners.get(id);
-    if (existing?.alive) return existing;
     const inFlight = this.starting.get(id);
     if (inFlight) return inFlight;
+    const existing = this.runners.get(id);
+    if (existing?.alive) return existing;
     const row = this.requireRow(id);
     if (row.enabled !== 1) {
       throw new AppError(503, 'module_unavailable', `模块 ${id} 已停用`);
@@ -352,11 +354,17 @@ export class ModuleManager {
 
   async platforms(owner: string): Promise<PlatformSummary[]> {
     const summaries: PlatformSummary[] = [];
-    for (const row of this.list().filter((module) => module.enabled === 1)) {
+    const team = this.db.get<{ role: string }>('SELECT role FROM users WHERE id=?1', owner)?.role === 'team';
+    const bindings = team ? platformAccounts(this.db, owner) : [];
+    const accountsFor = (platform: string) => bindings.filter(account => account.platform === platform).map(account => {
+      const session = this.sessions.connected(accountScope(account), platform);
+      return { id: account.id, label: account.label, legacy: !!account.legacy, connected: !!session, display_name: session?.display_name ?? null, connected_at: session?.connected_at ?? null };
+    });
+    const rows = this.list();
+    for (const row of rows.filter(module => module.enabled === 1 || bindings.some(account => account.platform === module.id))) {
       let descriptor: PlatformDescriptor | undefined;
       try {
-        const runner = await this.ensureRunner(row.id);
-        descriptor = runner.describe?.platform;
+        descriptor = row.enabled ? (await this.ensureRunner(row.id)).describe?.platform : row.manifestJson.platform;
       } catch (error) {
         this.log('warn', `模块 ${row.id} 不可用：${(error as Error).message}`);
         descriptor = row.manifestJson.platform;
@@ -368,6 +376,7 @@ export class ModuleManager {
         connected: connected !== undefined,
         display_name: connected?.display_name ?? null,
         connected_at: connected?.connected_at ?? null,
+        ...(team ? { accounts: accountsFor(row.id) } : {}),
         module: {
           name: row.manifestJson.name,
           version: row.version,
@@ -376,6 +385,11 @@ export class ModuleManager {
           healthy: this.runners.get(row.id)?.alive ?? false,
         },
       });
+    }
+    for (const platform of new Set(bindings.map(account => account.platform))) {
+      if (rows.some(row => row.id === platform)) continue;
+      summaries.push({ id: platform, name: platform, short: platform, login: [], operations: [], unit_kinds: [], connected: false, display_name: null, connected_at: null, accounts: accountsFor(platform),
+        module: { name: platform, version: '未安装', sha256: '', enabled: false, healthy: false } });
     }
     return summaries;
   }
@@ -405,7 +419,7 @@ export class ModuleManager {
     platform: string,
     challenge: string,
   ): Promise<{ state: string; challenge: string }> {
-    this.sessions.challenge(challenge, owner);
+    this.sessions.challenge(challenge, owner, platform);
     const result = (await this.call(platform, 'auth.poll', {
       challenge,
       session: challenge,
@@ -435,7 +449,7 @@ export class ModuleManager {
     challenge: string,
     fields: Record<string, string>,
   ): Promise<{ state: string; message?: string }> {
-    this.sessions.challenge(challenge, owner);
+    this.sessions.challenge(challenge, owner, platform);
     const result = (await this.call(platform, 'auth.submit', {
       challenge,
       session: challenge,
@@ -562,9 +576,9 @@ export class ModuleManager {
     return `/api/media/${id}`;
   }
   async readImage(owner: string, id: string) {
-    const row = this.db.get<{ platform: string }>('SELECT platform FROM media_assets WHERE id=?1 AND owner=?2', id, owner);
+    const row = this.db.get<{ owner: string; platform: string }>('SELECT owner,platform FROM media_assets WHERE id=?1 AND (owner=?2 OR owner IN (SELECT id FROM platform_accounts WHERE owner=?2))', id, owner);
     if (!row) throw notFound('找不到自己的题目图片');
-    return this.image(owner, row.platform, `/api/media/${id}`);
+    return this.image(row.owner, row.platform, `/api/media/${id}`);
   }
 
   private requireSession(owner: string, platform: string): string {
@@ -631,14 +645,14 @@ export class ModuleManager {
         if (typeof params.course !== 'string' || !params.course || params.course.length > 1000) throw badRequest('题库课程范围无效');
         try {
           validateQuestion(params.question as Parameters<typeof validateQuestion>[0]);
-          if (method === 'cw.question_bank.lookup') return this.memory.lookup(entry.owner, moduleId, params.course, params.question as Question, typeof params.course_kind === 'string' ? params.course_kind : undefined);
+          if (method === 'cw.question_bank.lookup') return this.memory.lookup(principalOwner(this.db, entry.owner), moduleId, params.course, params.question as Question, typeof params.course_kind === 'string' ? params.course_kind : undefined);
           if (method === 'cw.question_bank.confirm') {
             const confirmation = params.confirmation as { confirmed?: boolean; source?: string } | undefined;
             if (confirmation?.confirmed !== true || confirmation.source !== 'platform') throw badRequest('只有平台已确认的答案可以通过确认接口入库');
-            this.memory.record(entry.owner, moduleId, params.course, params.question as Question, params.answer as string[], { result: 'correct', source: 'platform', at: nowSeconds() });
+            this.memory.record(principalOwner(this.db, entry.owner), moduleId, params.course, params.question as Question, params.answer as string[], { result: 'correct', source: 'platform', at: nowSeconds() });
             return { ok: true };
           }
-          this.memory.record(entry.owner, moduleId, params.course, params.question as Question, params.answer as string[], params.evidence as Evidence);
+          this.memory.record(principalOwner(this.db, entry.owner), moduleId, params.course, params.question as Question, params.answer as string[], params.evidence as Evidence);
           return { ok: true };
         } catch (error) { if (error instanceof TypeError) throw badRequest(error.message); throw error; }
       }
@@ -646,7 +660,7 @@ export class ModuleManager {
         const entry = this.sessions.resolveFetch(this.requireSessionParam(params), moduleId);
         const manifest = JSON.parse(this.requireRow(moduleId).manifest) as Manifest;
         if (!manifest.permissions.ai || !this.ai) throw new AppError(403, 'permission_denied', '模块未声明模型权限');
-        return { text: await this.ai.generate(entry.owner, String(params.prompt ?? ''), { signal: AbortSignal.timeout(25_000) }) };
+        return { text: await this.ai.generate(principalOwner(this.db, entry.owner), String(params.prompt ?? ''), { signal: AbortSignal.timeout(25_000) }) };
       }
       case 'cw.asr.transcribe': {
         const entry = this.sessions.resolveFetch(this.requireSessionParam(params), moduleId);
@@ -666,7 +680,7 @@ export class ModuleManager {
         const entry = this.sessions.resolveFetch(session, moduleId);
         const manifest = JSON.parse(this.requireRow(moduleId).manifest) as Manifest;
         if (!manifest.permissions.browser || !this.browser) throw new AppError(403, 'permission_denied', '模块未声明官方浏览器权限');
-        if (params.stage !== undefined && params.stage !== 'read' && quietFor(this.db, entry.owner).active) throw new AppError(409, 'quiet_hours', '夜间暂停期间不执行页面写入');
+        if (params.stage !== undefined && params.stage !== 'read' && quietFor(this.db, principalOwner(this.db, entry.owner)).active) throw new AppError(409, 'quiet_hours', '夜间暂停期间不执行页面写入');
         if (method === 'cw.browser.open') return this.browser.open(entry, manifest.permissions.network, params, () => { this.sessions.resolveFetch(session, moduleId); });
         if (method === 'cw.browser.evaluate') return this.browser.evaluate(entry, String(params.page ?? ''), String(params.expression ?? ''));
         if (method === 'cw.browser.mouse') return this.browser.mouse(entry, String(params.page ?? ''), (params.action ?? {}) as Record<string, unknown>);
@@ -683,8 +697,8 @@ export class ModuleManager {
       }
       case 'cw.peers.list': {
         const entry = this.sessions.resolveFetch(this.requireSessionParam(params), moduleId);
-        if (!preferences(this.db, entry.owner).qa_peers) return { questions: [] };
-        const rows = this.db.all<{ platform_id: string }>(`SELECT q.platform_id FROM qa_posts q JOIN preferences p ON p.owner=q.owner WHERE q.owner!=?1 AND q.platform=?2 AND q.course_id=?3 AND q.recruit_id=?4 AND q.kind='question' AND json_extract(p.value,'$.qa_peers')=1 ORDER BY q.created_at DESC LIMIT 100`, entry.owner, moduleId, String(params.course_id), String(params.recruit_id));
+        if (!preferences(this.db, principalOwner(this.db, entry.owner)).qa_peers) return { questions: [] };
+        const rows = this.db.all<{ platform_id: string }>(`SELECT q.platform_id FROM qa_posts q LEFT JOIN platform_accounts a ON a.id=q.owner JOIN preferences p ON p.owner=coalesce(a.owner,q.owner) WHERE q.owner!=?1 AND q.platform=?2 AND q.course_id=?3 AND q.recruit_id=?4 AND q.kind='question' AND json_extract(p.value,'$.qa_peers')=1 ORDER BY q.created_at DESC LIMIT 100`, entry.owner, moduleId, String(params.course_id), String(params.recruit_id));
         return { questions: rows.map((r) => r.platform_id) };
       }
       // `cw.state` is the canonical method (spec §4.2): the presence of `value` selects a write.
@@ -718,7 +732,7 @@ export class ModuleManager {
     const manifest = JSON.parse(row.manifest) as Manifest;
 
     const stage = typeof params.stage === 'string' ? params.stage : 'read';
-    if (stage !== 'read' && quietFor(this.db, entry.owner).active) {
+    if (stage !== 'read' && quietFor(this.db, principalOwner(this.db, entry.owner)).active) {
       throw new AppError(409, 'quiet_hours', '夜间暂停期间不执行会改变平台状态的学习请求');
     }
 
@@ -774,7 +788,7 @@ export class ModuleManager {
           signal: entry.job ? this.jobSignals.get(entry.job.id)?.signal : undefined,
           beforeRequest: () => {
             this.sessions.resolveFetch(session, moduleId);
-            if (stage !== 'read' && quietFor(this.db, entry.owner).active) throw new AppError(409, 'quiet_hours', '夜间暂停期间不执行平台写入');
+            if (stage !== 'read' && quietFor(this.db, principalOwner(this.db, entry.owner)).active) throw new AppError(409, 'quiet_hours', '夜间暂停期间不执行平台写入');
           },
         },
       );

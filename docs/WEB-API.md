@@ -46,7 +46,7 @@ async function close() {
 
 当前开发分支已接入 PR #2 的可选宿主语音转写。`runtime.asr` 由后端创建，`/api/settings` 增加只读的 `asr: { available, backend, model }`；未配置时保持不可用，不影响其他功能。应用退出先停止接收 HTTP 请求并取消转写，再关闭其余运行时；仅关闭 HTTP 服务不会销毁后端。
 
-模块运行方式、数据库结构和内置题库接口保持不变。语音转写是模块 API v1 的可选能力，原有模块不需要新增权限。未来 App 可在此基础上组合独立前端与后端，不要求引入桌面 SDK、手机 SDK 或额外服务进程。
+模块运行方式和内置题库接口保持不变。语音转写是模块 API v1 的可选能力，原有模块不需要新增权限。未来 App 可在此基础上组合独立前端与后端，不要求引入桌面 SDK、手机 SDK 或额外服务进程。
 
 ### 本机来源与课程进度
 
@@ -66,7 +66,8 @@ async function close() {
 | `POST /api/admin/users` | 以 `username`、`password`、`role` 创建账号，无需邀请码 |
 | `POST /api/admin/users/:id/status` | 设置布尔值 `disabled`，停用时撤销会话并暂停未结束任务 |
 | `POST /api/admin/users/:id/password` | 设置 `password` 并撤销此用户所有站点会话 |
-| `POST /api/admin/users/:id/role` | 设置 `role: user 或 admin`；不能降低自己的角色 |
+| `POST /api/admin/users/:id/role` | 设置 `role: user、team 或 admin`；不能降低自己的角色 |
+| `POST /api/admin/users/:id/platform-account-limit` | 团队的跨平台账号总上限，`limit: 0–1000`，降低上限保留现有绑定 |
 | `POST /api/admin/users/:id/limit` | 设置 `limit: 1–8`，或 `null` 恢复站点默认 |
 | `POST /api/admin/users/:id/pause-tasks`、`stop-tasks` | 暂停或停止该用户的全部未结束任务 |
 | `GET/POST /api/admin/settings` | 读取或保存 `max_concurrency`、`parallel_study` |
@@ -83,3 +84,24 @@ async function close() {
 `/api/logs/export`、`/api/tasks/:id/logs`、`/api/tasks/:id/export` 和 `/api/history/export` 均返回 `text/plain; charset=utf-8`、`.log` 附件与 `Cache-Control: no-store`。管理员可使用 `kind=site_tasks` 导出全站任务日志；成员只能导出自己的任务。任务记录仅接受省略格式或 `format=log/txt`，旧的 `md/docx/json/csv` 参数返回 400。课程记录可通过 `platform`、`course`、`recruit` 过滤，标识须按查询参数编码；所有范围始终受账号权限限制。
 
 试卷和成绩单属于课程数据导出，继续使用各自的格式接口，与执行日志分开。
+
+## 团队与平台绑定
+
+管理员创建用户时，`role` 接受 `user`、`team`、`admin`；可提供数字 `platform_account_limit`，默认 10。公开注册忽略角色选择，仍只创建普通成员。用户列表为团队返回 `account_quota: {limit,used,remaining}`，其余用户为 `null`；响应还包含 `default_team_account_limit`。`/api/bootstrap` 的 `capabilities.team_accounts` 为 `true`。
+
+`GET /api/platforms` 增加同一结构的 `account_quota`；团队的平台描述增加 `accounts: [{id,label,legacy,connected,display_name,connected_at}]`。已停用或卸载的平台若仍有绑定，也保留不可登录的管理卡片，方便移除并释放配额。绑定编号是不透明 ID，不包含平台账号或凭据。
+
+| 接口 | 用途 |
+| --- | --- |
+| `POST /api/platforms/:pid/accounts` | 团队创建账号位，提供 `label`（1–60 字）；返回 `account` 和更新后的 `account_quota` |
+| `DELETE /api/platforms/:pid/accounts/:account` | 移除自己的绑定，停止其未结束任务、撤销会话并释放名额；保留任务历史 |
+| `/api/platforms/:pid/login` 及挑战的 `poll`、`submit` | 使用 `?account_id=绑定编号` 指定登录位置，挑战创建后不能切换绑定或平台 |
+| `/api/platforms/:pid/disconnect` | 指定 `account_id` 撤销此绑定登录态并暂停任务，保留账号位 |
+| `/api/platforms/:pid/courses/*` | 课程、目录、问答、成绩、任务、试卷及数据导出均使用 `account_id` 选择账号 |
+| `/api/history/export` | 可同时提供 `platform`、`course`、`recruit` 和 `account_id`，仅导出当前绑定的课程日志 |
+
+除升级前默认连接外，团队请求必须显式选择绑定；绑定必须属于当前用户及 URL 指定平台。所有写入沿用 Cookie、CSRF 和来源校验。新增达到总配额时返回 409 `platform_account_limit`；找不到自己的绑定返回 404；同一平台身份重复绑定返回 409 `platform_account_duplicate`。
+
+任务响应增加 `account_id` 和 `account_label`。已有默认任务的编号为 `null`，继续使用原默认会话；新任务固定绑定，后续继续、补答、确认和回读使用任务记录，不读取界面的当前选择。题图路径已包含不可猜测标识，服务端校验其绑定所属用户，无需给媒体 URL 再传账号参数。
+
+总配额包含未登录账号位。降低上限后保留已有账号，达到上限时禁止新增。已有成员改为团队会登记默认连接；仍有团队新增绑定时，改回其他角色返回 409 `team_accounts_remaining`。数据库版本 4 的升级与回退说明见 [团队账号](TEAM-ACCOUNTS.md)。

@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ServerContext } from '../context.ts';
 import { badRequest } from '../../core/errors.ts';
 import { nowSeconds } from '../../core/domain.ts';
+import { requirePlatformAccount } from '../../core/platform-accounts.ts';
 import { logRange, taskLogs, type LogKind } from '../../services/logs.ts';
 
 export function registerLogsRoutes(app: FastifyInstance, c: ServerContext): void {
@@ -25,10 +26,11 @@ export function registerLogsRoutes(app: FastifyInstance, c: ServerContext): void
       return reply.header('cache-control', 'no-store').header('content-disposition', `attachment; filename="courseflow-task-${task.id}.log"`).type('text/plain; charset=utf-8').send(text);
     });
   }
-  app.get<{ Querystring: { format?: string; platform?: string; course?: string; recruit?: string } }>('/api/history/export', async (request, reply) => {
+  app.get<{ Querystring: { format?: string; platform?: string; course?: string; recruit?: string; account_id?: string } }>('/api/history/export', async (request, reply) => {
     const who = c.access.requireIdentity(request);
     plainTextOnly(request.query.format);
-    const text = taskLogs(c.db, 0, nowSeconds(), { owner: who.user.id, platform: request.query.platform, course: request.query.course, recruit: request.query.recruit });
+    const account = request.query.account_id ? requirePlatformAccount(c.db, who.user.id, request.query.platform ?? '', request.query.account_id) : undefined;
+    const text = taskLogs(c.db, 0, nowSeconds(), { account, owner: who.user.id, platform: request.query.platform, course: request.query.course, recruit: request.query.recruit });
     c.logs.audit(who.user.id, '导出执行记录');
     return reply.header('cache-control', 'no-store').header('content-disposition', 'attachment; filename="courseflow-history.log"').type('text/plain; charset=utf-8').send(text);
   });

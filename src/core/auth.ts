@@ -4,6 +4,7 @@ import type { Db } from './db.ts';
 import { digest, randomId, randomToken } from './domain.ts';
 import { badRequest, conflict } from './errors.ts';
 import { registrationInvitation, useInvitation } from './invitations.ts';
+import { DEFAULT_TEAM_ACCOUNT_LIMIT, validateAccountLimit } from './platform-accounts.ts';
 
 export const SESSION_TTL = 7 * 86400;
 
@@ -15,7 +16,7 @@ const ARGON2_OPTIONS = {
   parallelism: 1,
 } as const;
 
-export type Role = 'admin' | 'user';
+export type Role = 'admin' | 'user' | 'team';
 
 export type User = {
   id: string;
@@ -107,10 +108,16 @@ export async function createUser(
   password: string,
   role: Role,
   now: number,
+  accountLimit = DEFAULT_TEAM_ACCOUNT_LIMIT,
 ): Promise<{ id: string; username: string; role: Role }> {
   validateCredentials(username, password);
+  validateAccountLimit(accountLimit);
   const hash = await hashPassword(password);
-  return db.transaction(() => insertUser(db, username, hash, role, now));
+  return db.transaction(() => {
+    const user = insertUser(db, username, hash, role, now);
+    db.run('UPDATE users SET platform_account_limit=?1 WHERE id=?2', accountLimit, user.id);
+    return user;
+  });
 }
 
 function insertUser(db: Db, username: string, hash: string, role: Role, now: number) {
