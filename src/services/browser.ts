@@ -75,7 +75,7 @@ class Cdp {
   }
 }
 
-type Page = { id: string; owner: string; platform: string; connectionId?: string; jobId?: string; generation?: number; child: ChildProcess; cdp: Cdp; sessionId: string; profile: string; allow: string[]; touched: number; observed: Record<string, unknown>; pendingObserved: Map<string, { path: string; status: number }> };
+type Page = { id: string; owner: string; platform: string; connectionId?: string; jobId?: string; generation?: number; child: ChildProcess; cdp: Cdp; sessionId: string; profile: string; allow: string[]; touched: number; observed: Record<string, unknown>; pendingObserved: Map<string, { path: string; status: number }>; captcha: boolean; images: Map<string, { requestId: string; mime: string; ready: boolean }> };
 
 /** 每个页面使用独立的无痕浏览器上下文，任务结束或暂停时立即关闭。 */
 export class BrowserService {
@@ -131,11 +131,22 @@ export class BrowserService {
       await cdp.call('Runtime.enable', {}, sessionId);
       const cookies = browserCookies(entry.cookies, allow);
       if (cookies.length) await cdp.call('Network.setCookies', { cookies }, sessionId);
-      const page: Page = { id: randomId(), owner: entry.owner, platform: entry.platform, connectionId: entry.connectionId, jobId: entry.job?.id, generation: entry.job?.generation, child, cdp, sessionId, profile, allow, touched: Date.now(), observed: {}, pendingObserved: new Map() };
+      const page: Page = { id: randomId(), owner: entry.owner, platform: entry.platform, connectionId: entry.connectionId, jobId: entry.job?.id, generation: entry.job?.generation, child, cdp, sessionId, profile, allow, touched: Date.now(), observed: {}, pendingObserved: new Map(), captcha: input.purpose === 'captcha', images: new Map() };
       this.pages.set(page.id, page);
       const patterns = Array.isArray(input.observe_urls) ? input.observe_urls.filter((s): s is string => typeof s === 'string' && s.startsWith('/') && s.length < 150).slice(0, 10) : [];
-      cdp.onEvent = (event) => { if (event.sessionId === sessionId) void this.observe(page, patterns, event).catch(() => {}); };
+      cdp.onEvent = (event) => {
+        if (event.sessionId !== sessionId) return;
+        if (page.captcha && event.method === 'Fetch.requestPaused') {
+          // Retain the official origin and cookies without starting the learning app itself.
+          void page.cdp.call('Fetch.fulfillRequest', {
+            requestId: event.params.requestId, responseCode: 200,
+            responseHeaders: [{ name: 'Content-Type', value: 'text/html; charset=utf-8' }],
+            body: Buffer.from('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>验证码</title><div id="courseflow-captcha"></div></html>').toString('base64'),
+          }, sessionId).then(() => page.cdp.call('Fetch.disable', {}, sessionId)).catch(() => {});
+        } else void this.observe(page, patterns, event).catch(() => {});
+      };
       child.once('exit', () => { this.pages.delete(page.id); cdp!.close(); fs.rmSync(profile, { recursive: true, force: true }); });
+      if (page.captcha) await cdp.call('Fetch.enable', { patterns: [{ urlPattern: url, resourceType: 'Document', requestStage: 'Request' }] }, sessionId);
       check();
       await cdp.call('Page.navigate', { url }, sessionId);
       check();
@@ -150,10 +161,18 @@ export class BrowserService {
   private async observe(page: Page, patterns: string[], event: Event) {
     if (event.method === 'Network.responseReceived' && event.params.response?.url?.startsWith('https:')) {
       const response = event.params.response;
+      if (page.captcha && response.mimeType?.startsWith('image/') && response.url.length <= 4096) {
+        page.images.set(response.url, { requestId: event.params.requestId, mime: response.mimeType, ready: false });
+        if (page.images.size > 32) page.images.delete(page.images.keys().next().value!);
+      }
       const pathname = new URL(response.url).pathname;
       const pattern = patterns.find((p) => pathname.endsWith(p));
       if (pattern) page.pendingObserved.set(event.params.requestId, { path: pattern, status: response.status });
     } else if (event.method === 'Network.loadingFinished') {
+      for (const [url, image] of page.images) if (image.requestId === event.params.requestId) {
+        if (event.params.encodedDataLength > 2 * 1024 * 1024) page.images.delete(url);
+        else image.ready = true;
+      }
       const pending = page.pendingObserved.get(event.params.requestId);
       if (!pending) return;
       page.pendingObserved.delete(event.params.requestId);
@@ -164,6 +183,16 @@ export class BrowserService {
       const error = pending.status >= 400 || parsed.success === false || !['', '0', '200'].includes(code);
       page.observed[pending.path] = { loaded: !error, ...(error ? { code: ['401', '403'].includes(code) || [401, 403].includes(pending.status) ? 'platform_login_expired' : 'platform_verification_required', error: ['401', '403'].includes(code) || [401, 403].includes(pending.status) ? '平台登录已过期' : '平台观看记录读取或保存失败，请核对验证提示' } : {}) };
     }
+  }
+  /** Original page-loaded bytes retain PNG alpha; fetching the image again could change it. */
+  async image(entry: Live, id: string, url: string): Promise<{ image: string; mime: string }> {
+    const page = this.require(id, entry);
+    const image = page.captcha ? page.images.get(url) : undefined;
+    if (!image?.ready) throw conflict('browser_image_unavailable', '当前验证码图片尚未加载或已失效');
+    const { body, base64Encoded } = await page.cdp.call('Network.getResponseBody', { requestId: image.requestId }, page.sessionId);
+    const buffer = Buffer.from(body, base64Encoded ? 'base64' : 'utf8');
+    if (!buffer.length || buffer.length > 2 * 1024 * 1024) throw badRequest('验证码图片为空或超过 2 MiB');
+    return { image: buffer.toString('base64'), mime: image.mime };
   }
   /** Real pointer input for React Flow / drag-only widgets. */
   async mouse(entry: Live, id: string, action: Record<string, unknown>): Promise<unknown> {

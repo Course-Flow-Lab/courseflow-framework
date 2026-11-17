@@ -46,6 +46,8 @@ npm test
 | `CF_PUBLIC_URL` | 与监听地址对应的本机源地址 | Cookie、来源校验和导出链接使用的完整源地址，不含路径 |
 | `CF_DATA_DIR` | `$XDG_DATA_HOME/courseflow` 或 `~/.local/share/courseflow` | 数据库、密钥、已安装模块和浏览器临时资料，放在源码外 |
 | `CF_CHROMIUM` | `/usr/bin/chromium` | 官方页面与播放器使用的 Chromium 可执行文件 |
+| `CF_CAPTCHA_URL` | 未设置 | 本地验证码识别后端，见[部署与调用说明](docs/CAPTCHA.md) |
+| `CF_CAPTCHA_TIMEOUT_MS` | `10000` | 验证码排队、识别及响应的总超时，最高 20000 毫秒 |
 | `CF_ASR_URL` | 未设置 | OpenAI 兼容的语音转写地址，如 `https://asr.example.com/v1`；与 `CF_ASR_COMMAND` 二选一 |
 | `CF_ASR_COMMAND` | 未设置 | 语音转写命令模板，`{input}` 为音频路径，`{output}` 可选 JSON 结果路径 |
 | `CF_ASR_MODEL` | `base.en` | 转写模型名，传给 HTTP 接口或命令模板 |
@@ -61,6 +63,8 @@ npm test
 语音转写为可选宿主能力，未配置时不启动外部命令或请求服务。转写排队和执行共用超时；任务取消或应用退出会取消等待队列并停止运行中的命令子进程或 HTTP 请求。`CF_CALL_TIMEOUT_MS` 必须是有效的正整数毫秒值，非法值回到 30000；若设置超过网关的 300 秒默认值，须同步调整代理超时。
 
 ## 模块系统
+
+Framework 0.1.13 起，模块可声明 `permissions.captcha: true`，通过 `cw.captcha.ocr` 和 `cw.captcha.slide_match` 共享本地 ddddocr 服务。配套 ZHS 0.3.8 支持共享课学习中的拼图验证；部署、返回值及验证范围见[本地验证码识别](docs/CAPTCHA.md)。
 
 ### 模块是什么
 

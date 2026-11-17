@@ -8,6 +8,7 @@ import type { Sessions } from '../core/sessions.ts';
 import type { JobScope } from '../core/sessions.ts';
 import type { AiService } from '../services/ai.ts';
 import type { AsrService } from '../services/asr.ts';
+import type { CaptchaService } from '../services/captcha.ts';
 import type { BrowserService } from '../services/browser.ts';
 import type { AnswerMemory } from '../services/answers.ts';
 import { validateQuestion, type Evidence } from '../question-bank/index.js';
@@ -60,6 +61,7 @@ export class ModuleManager {
   private restartTimers = new Map<string, NodeJS.Timeout>();
   private ai?: AiService;
   private asr?: AsrService;
+  private captcha?: CaptchaService;
   private browser?: BrowserService;
   private memory?: AnswerMemory;
   private hostOperations = new Set<Promise<unknown>>();
@@ -76,6 +78,7 @@ export class ModuleManager {
     log: Logger;
     ai?: AiService;
     asr?: AsrService;
+    captcha?: CaptchaService;
     browser?: BrowserService;
     memory?: AnswerMemory;
   }) {
@@ -86,6 +89,7 @@ export class ModuleManager {
     this.log = options.log;
     this.ai = options.ai;
     this.asr = options.asr;
+    this.captcha = options.captcha;
     this.browser = options.browser;
     this.memory = options.memory;
     this.maintenanceTimer = setInterval(() => { if (!this.maintaining) this.maintaining = this.maintain().finally(() => { this.maintaining = undefined; }); }, 60_000);
@@ -672,7 +676,19 @@ export class ModuleManager {
         const buffer = Buffer.from(audio, 'base64');
         return { text: await this.asr.transcribe(buffer, mime, { signal: entry.job ? this.jobSignals.get(entry.job.id)?.signal : undefined }) };
       }
+      case 'cw.captcha.status':
+      case 'cw.captcha.ocr':
+      case 'cw.captcha.slide_match': {
+        const entry = this.sessions.resolveFetch(this.requireSessionParam(params), moduleId);
+        const manifest = JSON.parse(this.requireRow(moduleId).manifest) as Manifest;
+        if (!manifest.permissions.captcha) throw new AppError(403, 'permission_denied', '模块未声明验证码识别权限');
+        if (method === 'cw.captcha.status') return { available: this.captcha?.available() ?? false };
+        if (!this.captcha) throw new AppError(409, 'captcha_unavailable', '服务器未配置验证码识别服务');
+        return this.captcha.recognize(method === 'cw.captcha.ocr' ? 'ocr' : 'slide_match', params,
+          entry.job ? this.jobSignals.get(entry.job.id)?.signal : undefined);
+      }
       case 'cw.browser.open':
+      case 'cw.browser.image':
       case 'cw.browser.evaluate':
       case 'cw.browser.mouse':
       case 'cw.browser.close': {
@@ -680,8 +696,10 @@ export class ModuleManager {
         const entry = this.sessions.resolveFetch(session, moduleId);
         const manifest = JSON.parse(this.requireRow(moduleId).manifest) as Manifest;
         if (!manifest.permissions.browser || !this.browser) throw new AppError(403, 'permission_denied', '模块未声明官方浏览器权限');
+        if ((method === 'cw.browser.image' || params.purpose === 'captcha') && !manifest.permissions.captcha) throw new AppError(403, 'permission_denied', '模块未声明验证码识别权限');
         if (params.stage !== undefined && params.stage !== 'read' && quietFor(this.db, principalOwner(this.db, entry.owner)).active) throw new AppError(409, 'quiet_hours', '夜间暂停期间不执行页面写入');
         if (method === 'cw.browser.open') return this.browser.open(entry, manifest.permissions.network, params, () => { this.sessions.resolveFetch(session, moduleId); });
+        if (method === 'cw.browser.image') return this.browser.image(entry, String(params.page ?? ''), String(params.url ?? ''));
         if (method === 'cw.browser.evaluate') return this.browser.evaluate(entry, String(params.page ?? ''), String(params.expression ?? ''));
         if (method === 'cw.browser.mouse') return this.browser.mouse(entry, String(params.page ?? ''), (params.action ?? {}) as Record<string, unknown>);
         await this.browser.closeOwned(entry, String(params.page ?? '')); return {};

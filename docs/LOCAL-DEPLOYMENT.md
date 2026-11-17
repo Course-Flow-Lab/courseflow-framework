@@ -51,6 +51,8 @@ journalctl --user -u courseflow-local -u courseflow-webui-local -n 50 --no-pager
 
 ## 首次登录
 
+0.1.13 的可选本地验证码后端及 ZHS 0.3.8 安装见[本地验证码识别](CAPTCHA.md)。升级前备份外部数据目录；保持账号、会话、主密钥、模块设置和任务记录。旧任务固定的模块版本与新模块不一致时会暂停，需核对后新建任务；部署不会自动执行旧任务或替用户完成真实平台验收。
+
 框架 0.1.5 可同时安装智慧树与超星独立模块；超星的外部 Python 环境、清单和配置见 [模块 README](https://github.com/Course-Flow-Lab/courseflow-chaoxing)。本次超星验证只使用合成数据，不进行真实账号测试。升级框架继续使用数据库版本 3，不替换现有数据库或主密钥。
 
 导入旧站点数据 请使用 [专用迁移工具](LEGACY-MIGRATION.md)，目标须为全新目录，不向正在运行的数据目录合并。工具不会执行历史任务或激活旧登录态。

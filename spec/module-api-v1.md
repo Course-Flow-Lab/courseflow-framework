@@ -1,6 +1,6 @@
 # Courseflow 模块 API v1
 
-本文描述框架与独立平台模块之间的实际协议。当前框架 `0.1.6` 仅支持 `moduleApi: 1`。新增可选方法使用框架版本范围控制兼容性，不承诺尚未实现的上一代主版本兼容。
+本文描述框架与独立平台模块之间的实际协议。当前框架 `0.1.13` 仅支持 `moduleApi: 1`。新增可选方法使用框架版本范围控制兼容性，不承诺尚未实现的上一代主版本兼容。
 
 模块是常驻子进程，stdin／stdout 使用 UTF-8、每行一个 JSON 对象的 JSON-RPC 2.0。`error.code` 使用稳定字符串；通知没有 `id`。stdout 只能输出协议，日志写 stderr。模块的网络、状态、模型和浏览器操作经宿主服务调用。
 
@@ -232,8 +232,13 @@ Node.js 使用权限模型限制文件、网络和子进程。二进制直接作
 | `cw.log` | 通知：`{level,message,fields?}`，不得含凭据 |
 | `cw.ai.generate` | `{session,prompt}` → `{text}`；需要清单 `ai:true`，使用该用户选中的模型 |
 | `cw.asr.transcribe` | `{session,audio,mime?}` → `{text}`；`audio` 为 Base64，需要清单 `asr:true`，由宿主调用配置的转写后端 |
+| `cw.captcha.status` | `{session}` → `{available}`；需要 `captcha:true`，表示宿主是否配置识别后端 |
+| `cw.captcha.ocr` | `{session,image}` → `{text}`；需要 `captcha:true` |
+| `cw.captcha.slide_match` | `{session,target_image,background_image,simple_target?}` → `{target:[x1,y1,x2,y2],target_x,target_y}`；需要 `captcha:true` |
 | `cw.browser.open` | `{session,url,purpose?,observe_urls?}` → `{page}`；需要 `browser:true` |
 | `cw.browser.evaluate` | `{session,page,expression,stage}` → JSON 可序列化的脚本结果 |
+| `cw.browser.image` | `{session,page,url}` → `{image,mime}`；仅验证码页面已经加载的原图，需要 `browser:true` 和 `captcha:true` |
+| `cw.browser.mouse` | `{session,page,stage,action:{type:"drag",from:{x,y},to:{x,y}}}` → `{ok:true}`；需要 `browser:true` |
 | `cw.browser.close` | `{session,page}` → `{}` |
 | `cw.peers.record` | `{session,record}` → `{}`，加密保存已确认的平台发布编号 |
 | `cw.peers.list` | `{session,course_id,recruit_id}` → `{questions:string[]}`，双方开启互助才返回同课程问题编号 |
@@ -326,8 +331,17 @@ interface Attempt {
 | `net_blocked/quiet_hours/task_cancelled` | 权限、时间或执行代次拒绝 |
 | `model_required/model_unavailable/model_not_ready/ai_unavailable/answer_format` | 模型配置、连接或答案格式问题 |
 | `browser_unavailable/browser_timeout/browser_closed/browser_page_error` | 官方浏览器不可用或页面异常 |
+| `captcha_unavailable/captcha_backend_error/captcha_timeout/captcha_cancelled/browser_image_unavailable` | 识别后端未配置、响应错误、超时、取消或验证码原图已失效 |
 
 模块应验证清单与描述一致、未知方法返回有类型错误、分步调用不超过三十秒、stdin 关闭可退出。至少提供一轮无网络、无真实账号的模拟宿主测试，并单独记录真实账号验收范围。
+
+## 验证码补充约定
+
+Framework 0.1.13 新增可选 `permissions.captcha`，默认 `false`。图片为标准 Base64，每张最多 2 MiB。宿主识别入口只接收图片，不传平台凭据，不通过模块网络白名单访问本地服务。具体部署、坐标格式及流程见[本地验证码识别](../docs/CAPTCHA.md)。
+
+`cw.browser.open` 的 `purpose:"captcha"` 需要同时声明浏览器和验证码权限，宿主用空文档保留已授权的官方源，避免启动学习页面的其他业务。页面通过官方验证码组件加载原图，`cw.browser.image` 返回其原始字节，不再次下载或去掉透明通道。页面仍按用户、平台、连接和任务执行代次绑定。
+
+模块必须以平台的验证结果为准。未知写入结果不得自动重发；额外验证应拆成短调用，保留原学习进度，恢复后重新计时。
 
 ## 语音转写补充约定
 
