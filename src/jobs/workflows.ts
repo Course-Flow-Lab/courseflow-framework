@@ -74,7 +74,7 @@ async function review(c: WorkflowContext) {
       }
       if (result.status !== 'in_progress') { c.pause(String(result.reason ?? '复习需要到官方页面核对')); return; }
       const partial = Math.max(0, Number((result.progress as any)?.watched_seconds ?? 0));
-      c.update(`每日复习：${Math.floor((c.checkpoint.reviewed + partial) / 60)} / ${budget / 60} 分钟`, Math.min(99, Math.round((c.checkpoint.reviewed + partial) / budget * 100)));
+      c.update(typeof result.detail === 'string' ? result.detail : `每日复习：${Math.floor((c.checkpoint.reviewed + partial) / 60)} / ${budget / 60} 分钟`, Math.min(99, Math.round((c.checkpoint.reviewed + partial) / budget * 100)));
       await sleep(Math.max(1, Math.min(60_000, Number(result.wait_ms) || 1000)), c.signal);
     }
   }

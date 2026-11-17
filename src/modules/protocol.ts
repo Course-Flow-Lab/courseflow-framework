@@ -39,6 +39,7 @@ export type Manifest = {
     browser: boolean;
     ai: boolean;
     asr?: boolean;
+    captcha?: boolean;
     question_bank?: boolean;
     storage: 'module';
   };
@@ -271,6 +272,7 @@ export function validateManifest(raw: unknown): Manifest {
       browser: permissions.browser === true,
       ai: permissions.ai === true,
       asr: permissions.asr === true,
+      captcha: permissions.captcha === true,
       question_bank: permissions.question_bank === true,
       storage: 'module',
     },

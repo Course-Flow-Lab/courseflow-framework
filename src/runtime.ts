@@ -9,6 +9,7 @@ import { JobEngine } from './jobs/engine.ts';
 import { FRAMEWORK_VERSION } from './version.ts';
 import { AiService } from './services/ai.ts';
 import { AsrService } from './services/asr.ts';
+import { CaptchaService } from './services/captcha.ts';
 import { AnswerMemory } from './services/answers.ts';
 import { QuestionBankService } from './question-bank/service.ts';
 import { BrowserService } from './services/browser.ts';
@@ -29,6 +30,7 @@ export type Runtime = {
   memory: AnswerMemory;
   questionBank: QuestionBankService;
   asr: AsrService;
+  captcha: CaptchaService;
   browser: BrowserService;
   logs: LogStore;
   log: Logger;
@@ -76,16 +78,17 @@ export async function createRuntime(
       maxBytes: Number(process.env.CF_ASR_MAX_BYTES) || undefined,
       concurrency: Number(process.env.CF_ASR_CONCURRENCY) || undefined,
     });
+    const captcha = new CaptchaService({ url: process.env.CF_CAPTCHA_URL, timeoutMs: Number(process.env.CF_CAPTCHA_TIMEOUT_MS) || undefined });
     const browser = new BrowserService(config.dataDir);
-    const manager = new ModuleManager({ db, vault, sessions, modulesDir: config.modulesDir, log, ai, asr, browser, memory });
+    const manager = new ModuleManager({ db, vault, sessions, modulesDir: config.modulesDir, log, ai, asr, captcha, browser, memory });
     const jobs = new JobEngine({ db, vault, manager, log, ai, memory, recoverInterrupted: options.recoverTasks });
     log('info', `Courseflow ${VERSION} 运行时已就绪`);
     let closing: Promise<void> | undefined;
     return {
-      config, db, vault, sessions, manager, jobs, log, ai, memory, questionBank: memory, asr, browser, logs,
+      config, db, vault, sessions, manager, jobs, log, ai, memory, questionBank: memory, asr, captcha, browser, logs,
       close: () => closing ??= (async () => {
         const errors: unknown[] = [];
-        for (const close of [() => asr.shutdown(), () => jobs.shutdown(), () => manager.stopAll(), () => browser.shutdown(), () => db.close()]) {
+        for (const close of [() => captcha.shutdown(), () => asr.shutdown(), () => jobs.shutdown(), () => manager.stopAll(), () => browser.shutdown(), () => db.close()]) {
           try { await close(); } catch (error) { errors.push(error); }
         }
         if (errors.length) throw new AggregateError(errors, '后端运行时未能完全关闭');

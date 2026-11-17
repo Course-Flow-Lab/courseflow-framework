@@ -206,13 +206,13 @@ test('绑定使用团队模型和偏好，媒体只允许归属用户读取，�
   assert.throws(() => runtime.sessions.complete(second.id, 'sim', challenge, original), /已绑定/);
   assert.deepEqual(runtime.sessions.load(first.id, 'sim'), original); assert.equal(runtime.sessions.load(second.id, 'sim'), undefined);
   let modelOwner = '';
-  t.mock.method(runtime.ai, 'generate', async owner => { modelOwner = owner; return '合成答案'; });
+  t.mock.method(runtime.ai, 'generate', async (owner: string) => { modelOwner = owner; return '合成答案'; });
   const handle = runtime.sessions.handleFor(first.id, 'sim')!;
   const answer = await (runtime.manager as any).hostCall('sim', 'cw.ai.generate', { session: handle, prompt: '合成题目' });
   assert.equal(answer.text, '合成答案'); assert.equal(modelOwner, current.user.id);
   const url = runtime.manager.registerImage(first.id, 'sim', 'https://synthetic.invalid/question.png');
   let imageOwner = '';
-  t.mock.method(runtime.manager, 'image', async owner => { imageOwner = owner; return { mime: 'image/png', data: '' }; });
+  t.mock.method(runtime.manager, 'image', async (owner: string) => { imageOwner = owner; return { mime: 'image/png', data: '' }; });
   assert.equal((await call(runtime, { url, session: admin })).status, 404);
   const response = await runtime.app.inject({ url, headers: { cookie: `cf_session=${current.session.token}` } });
   assert.equal(response.statusCode, 200); assert.equal(imageOwner, first.id);

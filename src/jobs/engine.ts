@@ -579,7 +579,7 @@ export class JobEngine {
             const fraction = duration > 0 && Number.isFinite(seconds)
               ? Math.max(0, Math.min(1, seconds / duration)) : 0;
             this.update(taskId, {
-              detail: `正在学习：${unit.name}（已 ${Number.isFinite(seconds) ? seconds : 0} 秒）`,
+              detail: typeof outcome.detail === 'string' ? `${unit.name}：${outcome.detail}` : `正在学习：${unit.name}（已 ${Number.isFinite(seconds) ? seconds : 0} 秒）`,
               progress: Math.max(current.progress ?? 0,
                 Math.min(99, Math.round(((completed + fraction) / selected.length) * 100))),
             });
