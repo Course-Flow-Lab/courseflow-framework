@@ -10,7 +10,7 @@ import { preferences } from '../core/preferences.ts';
 
 export type WorkflowContext = {
   db: Db; manager: ModuleManager; ai: AiService; memory: AnswerMemory;
-  task: TaskRow; input: JobInput; course: Course; checkpoint: Checkpoint; signal: AbortSignal;
+  platformOwner: string; task: TaskRow; input: JobInput; course: Course; checkpoint: Checkpoint; signal: AbortSignal;
   check: () => void; save: () => void; update: (detail: string, progress?: number) => void;
   pause: (detail: string) => void; event: (kind: string, detail: string) => void;
 };
@@ -23,7 +23,7 @@ type AnswerState = {
 const scope = (c: WorkflowContext) => ({ id: c.task.id, generation: c.task.generation });
 async function call(c: WorkflowContext, method: string, params: Record<string, unknown>) {
   c.check();
-  const result = await c.manager.invoke(c.task.owner, c.task.platform, method, { course: c.course, operation: c.task.operation, ...params }, scope(c));
+  const result = await c.manager.invoke(c.platformOwner, c.task.platform, method, { course: c.course, operation: c.task.operation, ...params }, scope(c));
   c.check();
   return result;
 }
@@ -47,7 +47,7 @@ export async function runWorkflow(c: WorkflowContext): Promise<void> {
 }
 
 async function review(c: WorkflowContext) {
-  const all = await c.manager.units(c.task.owner, c.task.platform, c.course);
+  const all = await c.manager.units(c.platformOwner, c.task.platform, c.course);
   c.check();
   const selected = new Set(JSON.parse(c.task.units) as string[]);
   const videos = all.filter((u) => selected.has(u.id) && u.kind === 'video' && u.state === 'completed' && (u.duration_seconds ?? 0) > 0);
@@ -61,7 +61,7 @@ async function review(c: WorkflowContext) {
     const key = `${index}/${unit.id}`;
     while (true) {
       c.check();
-      const result = await c.manager.studyStep(c.task.owner, c.task.platform, c.course, unit, c.checkpoint.positions[key] ?? null,
+      const result = await c.manager.studyStep(c.platformOwner, c.task.platform, c.course, unit, c.checkpoint.positions[key] ?? null,
         { ...c.input.options, operation: 'review', speedup: false, max_speed: 1, review_seconds: Math.min(budget - c.checkpoint.reviewed, unit.duration_seconds!), execution_id: `${c.task.id}/${c.task.generation}` }, scope(c));
       c.check();
       if (result.checkpoint !== undefined) c.checkpoint.positions[key] = result.checkpoint;
@@ -156,7 +156,7 @@ async function answer(c: WorkflowContext) {
       if (!opened.ready || !opened.attempt || !Array.isArray(opened.attempt.questions) || !opened.attempt.questions.length) { c.pause('试卷尚未完整读取，请核对当前作答记录'); return false; }
       state.attempt = opened.attempt;
       (state as any).started_at = nowSeconds();
-      for (const q of state.attempt!.questions) q.images = (q.images ?? []).map((url) => c.manager.registerImage(c.task.owner, c.task.platform, url));
+      for (const q of state.attempt!.questions) q.images = (q.images ?? []).map((url) => c.manager.registerImage(c.platformOwner, c.task.platform, url));
       state.answers = {}; state.explanations = {}; state.preserve = []; state.cursor = 0; state.confirmed = false; state.phase = 'answers';
       for (const q of state.attempt!.questions) {
         if (validAnswer(q, q.correct_answer)) c.memory.remember(c.task.owner, c.task.platform, courseKey, q, q.correct_answer);
@@ -204,7 +204,7 @@ async function answer(c: WorkflowContext) {
         c.update(`正在处理题目 ${attempt.questions.indexOf(question) + 1} / ${attempt.questions.length}：${attempt.name}`);
         if (c.input.options.use_ai === false) { state.phase = 'waiting_answers'; save(); c.pause('请在任务详情中补全尚未作答的题目'); return; }
         try {
-          const images = await Promise.all((question.images ?? []).slice(0, 8).map((url) => c.manager.image(c.task.owner, c.task.platform, url)));
+          const images = await Promise.all((question.images ?? []).slice(0, 8).map((url) => c.manager.image(c.platformOwner, c.task.platform, url)));
           c.check();
           const generated = await c.ai.generate(c.task.owner, questionPrompt(question), { modelId: c.input.options.model_id as string | undefined, system: ANSWER_SYSTEM, images, signal: c.signal });
           c.check();

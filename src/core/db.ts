@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL,
+  platform_account_limit INTEGER NOT NULL DEFAULT 10,
   disabled INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
@@ -16,6 +17,16 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS platform_accounts (
+  id TEXT PRIMARY KEY,
+  owner TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  platform TEXT NOT NULL,
+  label TEXT NOT NULL,
+  legacy INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS platform_accounts_owner ON platform_accounts(owner,platform);
+CREATE UNIQUE INDEX IF NOT EXISTS platform_accounts_legacy ON platform_accounts(owner,platform) WHERE legacy=1;
 CREATE TABLE IF NOT EXISTS site_settings (
   setting_key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -64,6 +75,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   owner TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   platform TEXT NOT NULL,
   operation TEXT NOT NULL,
+  account_id TEXT,
   course_id TEXT NOT NULL,
   recruit_id TEXT NOT NULL,
   course_name TEXT NOT NULL DEFAULT '',
@@ -118,10 +130,15 @@ export class Db {
     this.raw.exec('PRAGMA journal_mode = WAL;');
     this.raw.exec('PRAGMA foreign_keys = ON;');
     this.raw.exec('PRAGMA busy_timeout = 5000;');
-    this.raw.exec(SCHEMA);
     const version = this.raw.prepare('PRAGMA user_version').get() as { user_version: number };
-    if (version.user_version > 3) throw new Error('数据库由较新版本创建，请使用对应版本的框架');
-    if (version.user_version < 3) this.raw.exec('PRAGMA user_version = 3');
+    if (version.user_version > 4) throw new Error('数据库由较新版本创建，请使用对应版本的框架');
+    this.raw.exec(SCHEMA);
+    if (version.user_version < 4) this.transaction(() => {
+      const columns = (table: string) => this.all<{ name: string }>(`PRAGMA table_info(${table})`).map(row => row.name);
+      if (!columns('users').includes('platform_account_limit')) this.raw.exec('ALTER TABLE users ADD COLUMN platform_account_limit INTEGER NOT NULL DEFAULT 10');
+      if (!columns('tasks').includes('account_id')) this.raw.exec('ALTER TABLE tasks ADD COLUMN account_id TEXT');
+      this.raw.exec('PRAGMA user_version = 4');
+    });
   }
 
   run(sql: string, ...params: SqlValue[]): { changes: number } {

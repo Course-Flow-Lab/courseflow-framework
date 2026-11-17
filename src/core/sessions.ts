@@ -3,6 +3,7 @@ import type { Vault } from './vault.ts';
 import type { Cookie } from '../modules/net.ts';
 import { digest, nowSeconds, randomId } from './domain.ts';
 import { conflict, notFound, unauthorized } from './errors.ts';
+import { accountScope, platformAccounts, principalOwner, taskPlatformOwner } from './platform-accounts.ts';
 
 export type PlatformSession = {
   cookies: Cookie[];
@@ -57,9 +58,9 @@ export class Sessions {
     return handle;
   }
 
-  challenge(handle: string, owner: string): Live {
+  challenge(handle: string, owner: string, platform?: string): Live {
     const entry = this.live.get(handle);
-    if (!entry || entry.kind !== 'challenge' || entry.owner !== owner) {
+    if (!entry || entry.kind !== 'challenge' || entry.owner !== owner || platform && entry.platform !== platform) {
       throw conflict('login_not_found', '二维码已更新，请重新扫码');
     }
     if (entry.expires_at <= nowSeconds()) {
@@ -80,12 +81,14 @@ export class Sessions {
     if (entry.platform !== platform) {
       throw conflict('net_blocked', '模块不能使用其他平台的会话');
     }
+    const principal = principalOwner(this.db, entry.owner);
+    if (this.db.get<{ disabled: number }>('SELECT disabled FROM users WHERE id=?1', principal)?.disabled !== 0) throw unauthorized('站点账号已停用或不存在');
     if (entry.kind === 'session' && entry.connectionId !== this.load(entry.owner, platform)?.session_id) {
       throw conflict('platform_login_expired', '平台连接已更新，请核对账号后重新继续任务');
     }
     if (entry.job) {
-      const task = this.db.get<{ state: string; generation: number }>('SELECT state,generation FROM tasks WHERE id=?1 AND owner=?2', entry.job.id, entry.owner);
-      if (!task || task.state !== 'running' || task.generation !== entry.job.generation) throw conflict('task_cancelled', '任务执行已取消，旧执行器不能继续访问平台');
+      const task = this.db.get<{ owner: string; platform: string; account_id: string | null; state: string; generation: number }>('SELECT owner,platform,account_id,state,generation FROM tasks WHERE id=?1 AND owner=?2', entry.job.id, principal);
+      if (!task || task.state !== 'running' || task.generation !== entry.job.generation || taskPlatformOwner(this.db, task) !== entry.owner) throw conflict('task_cancelled', '任务执行已取消，旧执行器不能继续访问平台');
     }
     return entry;
   }
@@ -119,7 +122,13 @@ export class Sessions {
     handle: string,
     identity: { display_name: string; account_raw: string },
   ): PlatformSession {
-    const challenge = this.challenge(handle, owner);
+    const challenge = this.challenge(handle, owner, platform);
+    const principal = principalOwner(this.db, owner);
+    if (this.db.get<{ disabled: number }>('SELECT disabled FROM users WHERE id=?1', principal)?.disabled !== 0) throw unauthorized('站点账号已停用或不存在');
+    for (const account of platformAccounts(this.db, principal, platform)) {
+      const other = accountScope(account);
+      if (other !== owner && this.load(other, platform)?.account_raw === identity.account_raw) throw conflict('platform_account_duplicate', '此平台账号已绑定，请使用已有绑定');
+    }
     const session: PlatformSession = {
       cookies: challenge.cookies,
       token: challenge.token,

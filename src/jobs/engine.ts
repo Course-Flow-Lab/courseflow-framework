@@ -9,11 +9,13 @@ import { preferences, quietFor } from '../core/preferences.ts';
 import type { AiService } from '../services/ai.ts';
 import { AnswerMemory, validAnswer, ANSWER_SYSTEM, questionPrompt, parseModelAnswer } from '../services/answers.ts';
 import { runWorkflow, type WorkflowContext } from './workflows.ts';
+import { platformOwner, taskPlatformOwner } from '../core/platform-accounts.ts';
 
 export type TaskRow = {
   id: string;
   owner: string;
   platform: string;
+  account_id: string | null;
   operation: string;
   course_id: string;
   recruit_id: string;
@@ -29,8 +31,10 @@ export type TaskRow = {
 };
 
 export type TaskView = {
+  account_label: string | null;
   id: string;
   platform: string;
+  account_id: string | null;
   operation: string;
   course_id: string;
   recruit_id: string;
@@ -172,11 +176,12 @@ export class JobEngine {
     const cp = this.loadCheckpoint(row); const workflow = cp.workflow;
     if (!workflow?.attempt || !['submitting', 'readback'].includes(workflow.phase)) throw badRequest('当前任务没有待核对的交卷记录');
     const input = this.input(row);
-    if (input.account !== this.manager.accountKey(owner, row.platform)) throw conflict('platform_account_changed', '平台账号已变化，请连接原账号再回读');
-    const courses = await this.manager.courses(owner, row.platform);
+    const sessionOwner = taskPlatformOwner(this.db, row);
+    if (input.account !== this.manager.accountKey(sessionOwner, row.platform)) throw conflict('platform_account_changed', '平台账号已变化，请连接原账号再回读');
+    const courses = await this.manager.courses(sessionOwner, row.platform);
     const course = courses.find((c) => c.id === row.course_id && c.recruit_id === row.recruit_id);
     if (!course) throw notFound('找不到原课程');
-    const result = await this.manager.invoke(owner, row.platform, 'exam.readback', { course, attempt_id: workflow.attempt.id });
+    const result = await this.manager.invoke(sessionOwner, row.platform, 'exam.readback', { course, attempt_id: workflow.attempt.id });
     if (!result.confirmed || result.attempt_id !== workflow.attempt.id) throw conflict('submission_unknown', '平台仍未确认本次作答，不会重新提交');
     for (const q of workflow.attempt.questions) {
       const answer = result.graded_answers?.[q.id];
@@ -207,7 +212,7 @@ export class JobEngine {
   private input(row: TaskRow): JobInput {
     const stored = this.db.get<{ sealed: Uint8Array }>('SELECT sealed FROM task_inputs WHERE task_id=?1', row.id);
     if (stored) return this.vault.openJson<JobInput>(row.owner, `job/${row.id}/input`, Buffer.from(stored.sealed));
-    const input: JobInput = { account: this.manager.accountKey(row.owner, row.platform) ?? '', connection: this.manager.connectionId(row.owner, row.platform) ?? '', version: this.manager.moduleVersion(row.platform), options: preferences(this.db, row.owner) as unknown as Record<string, unknown> };
+    const input: JobInput = { account: this.manager.accountKey(taskPlatformOwner(this.db, row), row.platform) ?? '', connection: this.manager.connectionId(taskPlatformOwner(this.db, row), row.platform) ?? '', version: this.manager.moduleVersion(row.platform), options: preferences(this.db, row.owner) as unknown as Record<string, unknown> };
     this.saveInput(row, input); return input;
   }
   private saveInput(row: TaskRow, input: JobInput): void {
@@ -219,9 +224,9 @@ export class JobEngine {
     if (this.db.get<{ disabled: number }>('SELECT disabled FROM users WHERE id=?1', row.owner)?.disabled !== 0) return false;
     const user = effectiveTaskPolicy(this.db, row.owner);
     if (running.filter((r) => r.owner === row.owner).length >= user.concurrency) return false;
-    const account = this.manager.accountKey(row.owner, row.platform);
+    const account = this.manager.accountKey(taskPlatformOwner(this.db, row), row.platform);
     for (const other of running) {
-      if (this.manager.accountKey(other.owner, other.platform) !== account) continue;
+      if (this.manager.accountKey(taskPlatformOwner(this.db, other), other.platform) !== account) continue;
       const parallel = user.parallel_study && effectiveTaskPolicy(this.db, other.owner).parallel_study && row.operation === 'study' && other.operation === 'study';
       if (!parallel || row.course_id === other.course_id && row.recruit_id === other.recruit_id) return false;
     }
@@ -258,6 +263,8 @@ export class JobEngine {
     return {
       id: row.id,
       platform: row.platform,
+      account_id: row.account_id,
+      account_label: row.account_id ? this.db.get<{ label: string }>('SELECT label FROM platform_accounts WHERE id=?1 AND owner=?2', row.account_id, row.owner)?.label ?? '已移除账号' : null,
       operation: row.operation,
       course_id: row.course_id,
       recruit_id: row.recruit_id,
@@ -274,7 +281,7 @@ export class JobEngine {
 
   create(
     owner: string,
-    input: { platform: string; course: Course; unit_ids: string[]; operation: string; options?: Record<string, unknown> },
+    input: { platform: string; account_id?: string; course: Course; unit_ids: string[]; operation: string; options?: Record<string, unknown> },
   ): TaskView {
     const ownerRow = this.db.get<{ disabled: number; role: string }>('SELECT disabled,role FROM users WHERE id=?1', owner);
     if (ownerRow?.disabled !== 0) throw conflict('user_disabled', '此用户已停用');
@@ -285,8 +292,9 @@ export class JobEngine {
     if (!['study', 'trial', 'review', 'answer', 'mastery', 'meeting', 'qa', 'ask'].includes(input.operation)) throw badRequest('框架尚未提供此任务类型', 'unsupported_operation');
     const count = this.db.get<{ count: number }>("SELECT count(*) AS count FROM tasks WHERE owner=?1 AND state IN ('queued','running','paused')", owner)?.count ?? 0;
     if (count >= 20) throw badRequest('最多保留 20 项未结束任务，请先停止不需要的任务');
-    const account = this.manager.accountKey(owner, input.platform);
-    const connection = this.manager.connectionId(owner, input.platform);
+    const sessionOwner = platformOwner(this.db, owner, input.platform, input.account_id);
+    const account = this.manager.accountKey(sessionOwner, input.platform);
+    const connection = this.manager.connectionId(sessionOwner, input.platform);
     if (!account || !connection) throw conflict('platform_not_connected', '请先连接平台账号');
     if (quietFor(this.db, owner).active) {
       throw conflict('quiet_hours', '夜间暂停期间不能新建任务');
@@ -305,8 +313,8 @@ export class JobEngine {
     const id = randomId();
     const now = nowSeconds();
     this.db.run(
-      `INSERT INTO tasks(id,owner,platform,operation,course_id,recruit_id,course_name,units,state,generation,detail,created_at,updated_at)
-       VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'queued',1,'正在排队',?9,?9)`,
+      `INSERT INTO tasks(id,owner,platform,operation,course_id,recruit_id,course_name,units,state,generation,detail,created_at,updated_at,account_id)
+       VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'queued',1,'正在排队',?9,?9,?10)`,
       id,
       owner,
       input.platform,
@@ -316,6 +324,7 @@ export class JobEngine {
       input.course.name,
       JSON.stringify(unitIds),
       now,
+      input.account_id ?? null,
     );
     this.event(id, 'created', `已创建任务：${input.course.name}`);
     const data: JobInput = { account, connection, version: this.manager.moduleVersion(input.platform), options: { parallel_study: user.parallel_study, speedup: user.speedup, review_minutes: user.review_minutes, model_id: user.model_id, ...input.options, ...(['qa', 'ask'].includes(input.operation) ? { allow_over_limit: user.qa_allow_over_limit } : {}) } };
@@ -443,15 +452,16 @@ export class JobEngine {
       this.update(taskId, { state: 'running', detail: '准备目录' });
       const current = this.db.get<TaskRow>('SELECT * FROM tasks WHERE id = ?1', taskId)!;
       const input = this.input(current);
-      if (input.account !== this.manager.accountKey(current.owner, current.platform)) throw conflict('platform_account_changed', '平台账号已变化，请为当前账号新建任务');
-      if (input.connection !== this.manager.connectionId(current.owner, current.platform)) {
-        input.connection = this.manager.connectionId(current.owner, current.platform)!;
+      const sessionOwner = taskPlatformOwner(this.db, current);
+      if (input.account !== this.manager.accountKey(sessionOwner, current.platform)) throw conflict('platform_account_changed', '平台账号已变化，请为当前账号新建任务');
+      if (input.connection !== this.manager.connectionId(sessionOwner, current.platform)) {
+        input.connection = this.manager.connectionId(sessionOwner, current.platform)!;
         this.saveInput(current, input);
       }
       if (input.version !== this.manager.moduleVersion(current.platform)) throw conflict('module_version_changed', '平台模块已更新，请核对后重新创建任务');
       const unitIds = JSON.parse(current.units) as string[];
       const platform = await this.manager.describe(current.platform);
-      const courses = await this.manager.courses(current.owner, current.platform);
+      const courses = await this.manager.courses(sessionOwner, current.platform);
       const course = courses.find(
         (item) => item.id === current.course_id && item.recruit_id === current.recruit_id,
       );
@@ -461,7 +471,7 @@ export class JobEngine {
         const checkpoint = this.loadCheckpoint(current);
         const check = () => { if (controller.signal.aborted || !this.stillRunning(taskId, generation)) throw conflict('task_cancelled', '任务执行已取消'); };
         const context: WorkflowContext = {
-          db: this.db, manager: this.manager, ai: this.ai, memory: this.memory, task: current, input, course, checkpoint, signal: controller.signal,
+          db: this.db, manager: this.manager, ai: this.ai, memory: this.memory, platformOwner: sessionOwner, task: current, input, course, checkpoint, signal: controller.signal,
           check, save: () => { check(); this.saveCheckpoint(taskId, current.owner, checkpoint); },
           update: (detail, progress) => { check(); this.update(taskId, { detail, ...(progress === undefined ? {} : { progress }) }); },
           pause: (detail) => { check(); this.update(taskId, { state: 'paused', detail }); this.event(taskId, 'paused', detail); },
@@ -475,7 +485,7 @@ export class JobEngine {
         }
         return;
       }
-      const units = await this.manager.units(current.owner, current.platform, course);
+      const units = await this.manager.units(sessionOwner, current.platform, course);
       if (controller.signal.aborted || !this.stillRunning(taskId, generation)) return;
       const selected = unitIds
         .map((id) => units.find((unit) => unit.id === id))
@@ -515,7 +525,7 @@ export class JobEngine {
           }
           steps += 1;
           const outcome = await this.manager.studyStep(
-            current.owner,
+            sessionOwner,
             current.platform,
             course,
             unit,
@@ -532,7 +542,7 @@ export class JobEngine {
             const questions = outcome.questions as Question[];
             const answers = checkpoint.interactions?.[unit.id] ?? {};
             checkpoint.workflow = { kind: 'interaction', phase: 'waiting_answers', unit_id: unit.id, questions, answers, preserve: [] };
-            for (const q of questions) q.images = (q.images ?? []).map((url) => this.manager.registerImage(current.owner, current.platform, url));
+            for (const q of questions) q.images = (q.images ?? []).map((url) => this.manager.registerImage(sessionOwner, current.platform, url));
             for (const q of questions) {
               const courseKey = `${course.id}/${course.recruit_id}`;
               if (validAnswer(q, q.correct_answer)) this.memory?.remember(current.owner, current.platform, courseKey, q, q.correct_answer);
@@ -546,7 +556,7 @@ export class JobEngine {
               if ((!this.ai || input.options.use_ai === false) && questions.some(q => !validAnswer(q, answers[q.id]))) throw badRequest('请在任务详情中人工回答视频弹题');
               for (const q of questions) {
                 if (validAnswer(q, answers[q.id])) continue;
-                const images = await Promise.all((q.images ?? []).map((url) => this.manager.image(current.owner, current.platform, url)));
+                const images = await Promise.all((q.images ?? []).map((url) => this.manager.image(sessionOwner, current.platform, url)));
                 const raw = await this.ai!.generate(current.owner, questionPrompt(q), { modelId: input.options.model_id as string | undefined, system: ANSWER_SYSTEM, images, signal: controller.signal });
                 if (controller.signal.aborted || !this.stillRunning(taskId, generation)) return;
                 answers[q.id] = parseModelAnswer(q, raw).answer;

@@ -5,6 +5,7 @@ import { badRequest, conflict, notFound } from '../../core/errors.ts';
 import { nowSeconds } from '../../core/domain.ts';
 import { taskPolicy, saveTaskPolicy, saveUserTaskLimit, effectiveTaskPolicy } from '../../core/task-policy.ts';
 import { taskLogs } from '../../services/logs.ts';
+import { accountQuota, adoptLegacyAccounts, DEFAULT_TEAM_ACCOUNT_LIMIT, validateAccountLimit } from '../../core/platform-accounts.ts';
 
 type Target = { id: string; username: string; role: Role; disabled: number };
 const states = ['queued', 'running', 'paused', 'completed', 'failed', 'cancelled'];
@@ -59,15 +60,16 @@ export function registerAdminRoutes(app: FastifyInstance, c: ServerContext): voi
     const users = db.all<Target & { created_at: number; active_tasks: number; running_tasks: number }>(`SELECT u.id,u.username,u.role,u.disabled,u.created_at,
       (SELECT count(*) FROM tasks t WHERE t.owner=u.id AND t.state IN ${active}) AS active_tasks,
       (SELECT count(*) FROM tasks t WHERE t.owner=u.id AND t.state='running') AS running_tasks FROM users u ORDER BY u.created_at,u.id`);
-    return { users: users.map(row => ({ ...row, task_limit: policy.user_limits[row.id] ?? null, effective_concurrency: effectiveTaskPolicy(db, row.id).concurrency })), default_task_limit: policy.max_concurrency };
+    return { users: users.map(row => ({ ...row, account_quota: accountQuota(db, row.id), task_limit: policy.user_limits[row.id] ?? null, effective_concurrency: effectiveTaskPolicy(db, row.id).concurrency })), default_task_limit: policy.max_concurrency, default_team_account_limit: DEFAULT_TEAM_ACCOUNT_LIMIT };
   });
-  app.post<{ Body: { username?: unknown; password?: unknown; role?: unknown } }>('/api/admin/users', async (request, reply) => {
+  app.post<{ Body: { username?: unknown; password?: unknown; role?: unknown; platform_account_limit?: unknown } }>('/api/admin/users', async (request, reply) => {
     const who = access.requireIdentity(request, { admin: true, write: true });
     const body = request.body ?? {};
     if (typeof body.username !== 'string' || typeof body.password !== 'string') throw badRequest('请填写用户名和密码');
     const role = body.role ?? 'user';
-    if (role !== 'user' && role !== 'admin') throw badRequest('用户角色无效');
-    const created = await createUser(db, body.username.trim(), body.password, role, nowSeconds());
+    if (role !== 'user' && role !== 'admin' && role !== 'team') throw badRequest('用户角色无效');
+    const limit = body.platform_account_limit === undefined ? DEFAULT_TEAM_ACCOUNT_LIMIT : validateAccountLimit(body.platform_account_limit);
+    const created = await createUser(db, body.username.trim(), body.password, role, nowSeconds(), limit);
     audit(who.user.id, '创建用户', created.id); reply.header('cache-control', 'no-store');
     return { user: created };
   });
@@ -86,13 +88,25 @@ export function registerAdminRoutes(app: FastifyInstance, c: ServerContext): voi
   });
   app.post<{ Params: { id: string }; Body: { role?: unknown } }>('/api/admin/users/:id/role', async (request) => {
     const who = access.requireIdentity(request, { admin: true, write: true }), target = user(request.params.id), role = request.body?.role;
-    if (role !== 'user' && role !== 'admin') throw badRequest('用户角色无效');
+    if (role !== 'user' && role !== 'admin' && role !== 'team') throw badRequest('用户角色无效');
     if (role !== target.role) {
       protectAdmin(target, who.user.id);
-      db.run('UPDATE users SET role=?1 WHERE id=?2', role, target.id);
+      db.transaction(() => {
+        if (target.role === 'team' && role !== 'team' && db.get('SELECT 1 FROM platform_accounts WHERE owner=?1 AND legacy=0', target.id)) throw conflict('team_accounts_remaining', '请先移除团队新增的平台账号，再改为其他角色；原有默认连接可以保留');
+        if (role === 'team') adoptLegacyAccounts(db, target.id);
+        db.run('UPDATE users SET role=?1 WHERE id=?2', role, target.id);
+      });
       audit(who.user.id, '修改用户角色', target.id);
     }
     return { ok: true };
+  });
+  app.post<{ Params: { id: string }; Body: { limit?: unknown } }>('/api/admin/users/:id/platform-account-limit', async (request) => {
+    const who = access.requireIdentity(request, { admin: true, write: true }), target = user(request.params.id);
+    if (target.role !== 'team') throw badRequest('只有团队账号可设置跨平台账号总上限');
+    const limit = validateAccountLimit(request.body?.limit);
+    db.run('UPDATE users SET platform_account_limit=?1 WHERE id=?2', limit, target.id);
+    audit(who.user.id, '修改团队平台账号总上限', target.id);
+    return { account_quota: accountQuota(db, target.id) };
   });
   app.post<{ Params: { id: string }; Body: { password?: unknown } }>('/api/admin/users/:id/password', async (request) => {
     const who = access.requireIdentity(request, { admin: true, write: true }), target = user(request.params.id), password = request.body?.password;

@@ -72,7 +72,7 @@ export class LogStore {
   }
 }
 
-export function taskLogs(db: Db, start: number, end: number, scope: { owner?: string; task?: string; platform?: string; course?: string; recruit?: string } = {}): string {
+export function taskLogs(db: Db, start: number, end: number, scope: { owner?: string; task?: string; platform?: string; course?: string; recruit?: string; account?: { id: string; legacy: number } } = {}): string {
   const parameters: (string | number)[] = [start, end];
   const conditions = ['e.created_at>=?1', 'e.created_at<=?2'];
   if (scope.owner) { parameters.push(scope.owner); conditions.push(`t.owner=?${parameters.length}`); }
@@ -80,10 +80,14 @@ export function taskLogs(db: Db, start: number, end: number, scope: { owner?: st
   for (const [key, column] of [['platform', 'platform'], ['course', 'course_id'], ['recruit', 'recruit_id']] as const) {
     if (scope[key]) { parameters.push(scope[key]!); conditions.push(`t.${column}=?${parameters.length}`); }
   }
-  const rows = db.raw.prepare(`SELECT e.created_at,e.task_id,e.kind,e.detail,t.platform,t.operation,t.course_name,u.username FROM task_events e JOIN tasks t ON t.id=e.task_id JOIN users u ON u.id=t.owner WHERE ${conditions.join(' AND ')} ORDER BY e.created_at,e.id`).iterate(...parameters);
+  if (scope.account) {
+    parameters.push(scope.account.id);
+    conditions.push(scope.account.legacy ? `(t.account_id=?${parameters.length} OR t.account_id IS NULL)` : `t.account_id=?${parameters.length}`);
+  }
+  const rows = db.raw.prepare(`SELECT a.label AS account_label,e.created_at,e.task_id,e.kind,e.detail,t.platform,t.operation,t.course_name,u.username FROM task_events e JOIN tasks t ON t.id=e.task_id JOIN users u ON u.id=t.owner LEFT JOIN platform_accounts a ON a.id=t.account_id WHERE ${conditions.join(' AND ')} ORDER BY e.created_at,e.id`).iterate(...parameters);
   const output: string[] = []; let size = 0;
   for (const row of rows) {
-    const text = line({ time: Number(row.created_at), level: String(row.kind), message: `[${row.username} / ${row.platform}/${row.operation}] ${row.course_name || '课程'} · 任务 ${row.task_id}：${row.detail}` });
+    const text = line({ time: Number(row.created_at), level: String(row.kind), message: `[${row.username} / ${row.platform}/${row.operation}${row.account_label ? ' / ' + row.account_label : ''}] ${row.course_name || '课程'} · 任务 ${row.task_id}：${row.detail}` });
     if (size + Buffer.byteLength(text) > LIMIT) return output.join('') + overLimit;
     output.push(text); size += Buffer.byteLength(text);
   }

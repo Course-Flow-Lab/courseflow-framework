@@ -4,6 +4,7 @@ import type { Db } from '../core/db.ts';
 import { identity, type Identity } from '../core/auth.ts';
 import { nowSeconds } from '../core/domain.ts';
 import { AppError, unauthorized, forbidden } from '../core/errors.ts';
+import { platformOwner } from '../core/platform-accounts.ts';
 
 export function readCookie(request: FastifyRequest, name: string): string | undefined {
   for (const part of (request.headers.cookie ?? '').split(';')) {
@@ -31,6 +32,9 @@ export function createAccess(db: Db, config: Config) {
   }
   return {
     requireOrigin,
+    platformOwner(request: FastifyRequest, owner: string, platform: string): string {
+      return platformOwner(db, owner, platform, (request.query as { account_id?: unknown }).account_id);
+    },
     requireIdentity(request: FastifyRequest, options: { write?: boolean; admin?: boolean } = {}): Identity {
       const token = readCookie(request, 'cf_session');
       if (!token) throw unauthorized();
