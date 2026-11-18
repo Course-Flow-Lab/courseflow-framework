@@ -54,7 +54,8 @@ test('ZHS widget handles ready callbacks, original image geometry, unsupported t
   };
   const page: any = { Date: { now: () => (time += 4001) }, setTimeout: (fn: any) => fn(),
     document: { createElement: () => ({}), head: { appendChild: (loader: any) => { loads++; loader.onload(); } }, querySelector: (selector: string) => elements[selector] },
-    initNECaptcha: (options: any, callback: any) => { config = options; options.onReady(); callback({ popUp: () => popups++ }); },
+    // Popup mode loads the challenge after popUp(), then emits onReady.
+    initNECaptcha: (options: any, callback: any) => { config = options; callback({ popUp: () => { popups++; options.onReady(); } }); },
   };
   page.window = page;
   const context = vm.createContext(page);
