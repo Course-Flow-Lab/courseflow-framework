@@ -2,6 +2,7 @@ import type { Db } from '../core/db.ts';
 import type { Vault } from '../core/vault.ts';
 import type { ModuleManager, ModuleRow } from '../modules/manager.ts';
 import type { Course, Manifest, Unit, Question } from '../modules/protocol.ts';
+import { deferredChapterId } from '../modules/protocol.ts';
 import { nowSeconds, randomId, sleep } from '../core/domain.ts';
 import { badRequest, conflict, forbidden, notFound } from '../core/errors.ts';
 import { effectiveTaskPolicy } from '../core/task-policy.ts';
@@ -53,6 +54,7 @@ export type Checkpoint = { completed: string[]; current?: string; seconds?: numb
 export type JobInput = { options: Record<string, unknown>; account: string; connection: string; version: string };
 
 const MAX_UNITS = 200;
+const MAX_CX_STUDY_UNITS = 20_000;
 const STEP_CAP = 400;
 const MODULE_VERSION_CHANGED = '平台模块版本已变化，请在任务详情中核对迁移状态';
 type TaskModule = Pick<ModuleRow, 'version' | 'enabled' | 'manifest'>;
@@ -325,18 +327,15 @@ export class JobEngine {
 
   create(
     owner: string,
-    input: { platform: string; account_id?: string; course: Course; unit_ids: string[]; operation: string; options?: Record<string, unknown>; follow_unlocks?: boolean },
+    input: { platform: string; account_id?: string; course: Course; unit_ids: string[]; operation: string; options?: Record<string, unknown> },
   ): TaskView {
     const ownerRow = this.db.get<{ disabled: number; role: string }>('SELECT disabled,role FROM users WHERE id=?1', owner);
     if (ownerRow?.disabled !== 0) throw conflict('user_disabled', '此用户已停用');
     if (input.operation === 'trial' && ownerRow.role !== 'admin') throw forbidden('短时试跑仅供管理员诊断使用');
     const unitIds = [...new Set(input.unit_ids)];
-    const followUnlocks = input.follow_unlocks === true;
-    if (followUnlocks && (input.platform !== 'cx' || input.operation !== 'study' || unitIds.length !== 0)) {
-      throw badRequest('超星连续学习适用于整门课程，请清空手动选择');
-    }
-    if (!followUnlocks && unitIds.length === 0) throw badRequest('请先选择学习单元');
-    if (unitIds.length > MAX_UNITS) throw badRequest('一次最多选择 200 个单元');
+    if (unitIds.length === 0) throw badRequest('请先选择学习单元');
+    const maxUnits = input.platform === 'cx' && input.operation === 'study' ? MAX_CX_STUDY_UNITS : MAX_UNITS;
+    if (unitIds.length > maxUnits) throw badRequest(`一次最多选择 ${maxUnits} 个单元`);
     if (!['study', 'trial', 'review', 'answer', 'mastery', 'meeting', 'qa', 'ask'].includes(input.operation)) throw badRequest('框架尚未提供此任务类型', 'unsupported_operation');
     const count = this.db.get<{ count: number }>("SELECT count(*) AS count FROM tasks WHERE owner=?1 AND state IN ('queued','running','paused')", owner)?.count ?? 0;
     if (count >= 20) throw badRequest('最多保留 20 项未结束任务，请先停止不需要的任务');
@@ -376,7 +375,6 @@ export class JobEngine {
     );
     this.event(id, 'created', `已创建任务：${input.course.name}`);
     const data: JobInput = { account, connection, version: this.manager.moduleVersion(input.platform), options: { parallel_study: user.parallel_study, speedup: user.speedup, review_minutes: user.review_minutes, model_id: user.model_id, ...input.options, ...(['qa', 'ask'].includes(input.operation) ? { allow_over_limit: user.qa_allow_over_limit } : {}) } };
-    data.options.follow_unlocks = followUnlocks;
     const sealed = this.vault.sealJson(owner, `job/${id}/input`, data);
     this.db.run('INSERT INTO task_inputs VALUES(?1,?2)', id, new Uint8Array(sealed));
     const order = this.db.get<{ n: number }>('SELECT coalesce(max(position),0)+1 AS n FROM task_order')!.n;
@@ -573,13 +571,13 @@ export class JobEngine {
         }
         return;
       }
-      const followUnlocks = input.options.follow_unlocks === true && current.platform === 'cx' && current.operation === 'study';
-      let units = await this.manager.units(sessionOwner, current.platform, course, followUnlocks);
+      const deferredStudy = current.platform === 'cx' && current.operation === 'study' && unitIds.some(deferredChapterId);
+      let units = await this.manager.units(sessionOwner, current.platform, course, deferredStudy);
       if (controller.signal.aborted || !this.stillRunning(taskId, generation)) return;
       const selected = unitIds
         .map((id) => units.find((unit) => unit.id === id))
         .filter((unit): unit is Unit => unit !== undefined);
-      if (!followUnlocks && selected.length === 0) throw conflict('unit_not_found', '所选单元已不存在');
+      if (!deferredStudy && selected.length === 0) throw conflict('unit_not_found', '所选单元已不存在');
 
       const checkpoint = this.loadCheckpoint(current);
       // A unit the platform already reports as completed is not studied again: asking the
@@ -590,63 +588,83 @@ export class JobEngine {
         }
       }
       if (checkpoint.completed.length > 0) this.saveCheckpoint(taskId, current.owner, checkpoint);
-      let pending = followUnlocks ? [] : selected.filter((unit) => !checkpoint.completed.includes(unit.id));
-      if (!followUnlocks && pending.length === 0) {
+      let pending = deferredStudy ? [] : selected.filter((unit) => !checkpoint.completed.includes(unit.id));
+      if (!deferredStudy && pending.length === 0) {
         this.update(taskId, { state: 'completed', progress: 100, detail: '所选单元均已完成，无需继续学习' });
         this.event(taskId, 'completed', '所选单元均已完成');
         return;
       }
       let completed = checkpoint.completed.length;
-      const discovered = new Set(unitIds);
+      let scheduled = new Set(unitIds);
       const done = new Set(checkpoint.completed);
       let refreshAttempts = 0;
       let refresh = false;
 
-      while (pending.length || followUnlocks) {
+      while (pending.length || deferredStudy) {
         if (!pending.length) {
           if (refresh) {
             this.update(taskId, { detail: '正在刷新超星目录，检查新解锁的单元' });
             units = await this.manager.units(sessionOwner, current.platform, course, true);
             if (!this.stillRunning(taskId, generation)) return;
           }
+          const byId = new Map(units.map(unit => [unit.id, unit]));
+          const byChapter = new Map<string, Unit[]>();
           for (const unit of units) {
-            if (discovered.has(unit.id) && unit.state === 'completed' && !done.has(unit.id)) {
+            const chapter = byChapter.get(unit.chapter_id);
+            if (chapter) chapter.push(unit); else byChapter.set(unit.chapter_id, [unit]);
+          }
+          const expanded = new Set<string>();
+          let unlocked = 0;
+          for (const id of scheduled) {
+            const chapter = deferredChapterId(id);
+            const children = chapter && !byId.has(id) ? byChapter.get(chapter) : undefined;
+            if (children?.length) {
+              for (const unit of children) expanded.add(unit.id);
+              unlocked += 1;
+            } else {
+              expanded.add(id);
+            }
+          }
+          if (unlocked) {
+            scheduled = expanded;
+            this.update(taskId, { units: JSON.stringify([...scheduled]) });
+            this.event(taskId, 'units_discovered', `已接续 ${unlocked} 个解锁章节`);
+          }
+          for (const id of scheduled) {
+            const unit = byId.get(id);
+            if (unit?.state === 'completed' && !done.has(id)) {
               done.add(unit.id);
               checkpoint.completed.push(unit.id);
+            } else if (unit?.selectable && !done.has(id)) {
+              pending.push(unit);
             }
           }
           completed = checkpoint.completed.length;
           this.saveCheckpoint(taskId, current.owner, checkpoint);
-          pending = units.filter(unit => unit.selectable && unit.state !== 'completed' && !done.has(unit.id));
           if (!pending.length) {
-            const blocked = units.filter(unit => !unit.selectable && unit.state !== 'completed' && !done.has(unit.id));
+            const blocked = [...scheduled].filter(id => !done.has(id));
             if (!blocked.length) break;
-            if (refreshAttempts < 2 && blocked.some(unit => unit.id.startsWith('locked:'))) {
+            if (refreshAttempts < 2 && blocked.some(deferredChapterId)) {
               refreshAttempts += 1;
               await sleep(3000, controller.signal);
               if (!this.stillRunning(taskId, generation)) return;
               refresh = true;
               continue;
             }
-            const detail = `还有 ${blocked.length} 项未开放或需人工处理（${blocked[0].name}），可处理后继续此任务`;
+            const name = byId.get(blocked[0])?.name;
+            const detail = `还有 ${blocked.length} 项所选内容待解锁或需人工处理${name ? `（${name}）` : ''}，处理后可继续此任务`;
             this.update(taskId, { state: 'paused', detail });
             this.event(taskId, 'paused', detail);
             return;
-          }
-          const added = pending.filter(unit => !discovered.has(unit.id));
-          for (const unit of added) discovered.add(unit.id);
-          if (added.length) {
-            this.update(taskId, { units: JSON.stringify([...discovered]) });
-            this.event(taskId, 'units_discovered', `已加入 ${added.length} 个可学习单元`);
           }
           refresh = true;
           refreshAttempts = 0;
         }
         const unit = pending.shift()!;
-        const total = followUnlocks ? discovered.size : selected.length;
+        const total = deferredStudy ? scheduled.size : selected.length;
         this.update(taskId, {
           detail: `正在学习：${unit.name}`,
-          progress: followUnlocks ? Math.min(99, Math.round(completed / total * 100)) : Math.max(current.progress ?? 0, Math.round(completed / total * 100)),
+          progress: deferredStudy ? Math.min(99, Math.round(completed / total * 100)) : Math.max(current.progress ?? 0, Math.round(completed / total * 100)),
         });
         let steps = 0;
         while (steps < STEP_CAP) {
@@ -714,7 +732,7 @@ export class JobEngine {
               ? Math.max(0, Math.min(1, seconds / duration)) : 0;
             this.update(taskId, {
               detail: typeof outcome.detail === 'string' ? `${unit.name}：${outcome.detail}` : `正在学习：${unit.name}（已 ${Number.isFinite(seconds) ? seconds : 0} 秒）`,
-              progress: Math.max(followUnlocks ? 0 : current.progress ?? 0,
+              progress: Math.max(deferredStudy ? 0 : current.progress ?? 0,
                 Math.min(99, Math.round(((completed + fraction) / total) * 100))),
             });
             const wait = Math.min(Number(outcome.wait_ms ?? 1000) || 1000, 60_000);
@@ -728,7 +746,7 @@ export class JobEngine {
             completed = checkpoint.completed.length;
             this.saveCheckpoint(taskId, current.owner, checkpoint);
             this.update(taskId, {
-              progress: Math.min(followUnlocks ? 99 : 100, Math.round((completed / total) * 100)),
+              progress: Math.min(deferredStudy ? 99 : 100, Math.round((completed / total) * 100)),
               detail: `已完成：${unit.name}`,
             });
             this.event(taskId, 'unit_completed', unit.name);

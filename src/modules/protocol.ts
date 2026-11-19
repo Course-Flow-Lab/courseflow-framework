@@ -76,8 +76,13 @@ export type Unit = {
   state: 'not_started' | 'in_progress' | 'completed' | 'unknown';
   video_id?: string | null;
   selectable: boolean;
+  selectable_after_unlock?: boolean;
   selectable_note?: string;
 };
+
+export function deferredChapterId(id: string): string | undefined {
+  return /^locked:(\d+)$/.exec(id)?.[1];
+}
 
 export type Question = { id: string; text: string; kind: string; options: Array<{ id: string; text: string }>; answer: string[]; correct_answer?: string[]; explanation?: string; images?: string[]; blanks: number };
 export type Paper = { id: string; name: string; category: string; available: boolean; done: boolean; can_redo?: boolean; can_review?: boolean; reason?: string; score?: number | null; attempts_left?: number | null; ends_at?: number | null };
