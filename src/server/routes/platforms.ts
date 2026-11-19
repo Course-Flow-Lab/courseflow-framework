@@ -114,12 +114,13 @@ export function registerPlatformsRoutes(app: FastifyInstance, context: ServerCon
     },
   );
 
-  app.post<{ Params: { pid: string; id: string; rid: string }; Body: { unit_ids?: string[]; operation?: string } }>(
+  app.post<{ Params: { pid: string; id: string; rid: string }; Body: { unit_ids?: string[]; operation?: string; follow_unlocks?: boolean } }>(
     '/api/platforms/:pid/courses/:id/:rid/study',
     async (request) => {
       const current = requireIdentity(request, { write: true });
       const { pid, id, rid } = request.params;
-      const unitIds = request.body?.unit_ids;
+      const followUnlocks = request.body?.follow_unlocks === true;
+      const unitIds = request.body?.unit_ids ?? (followUnlocks ? [] : undefined);
       if (!Array.isArray(unitIds) || unitIds.some((value) => typeof value !== 'string')) {
         throw badRequest('请提供 unit_ids');
       }
@@ -133,6 +134,7 @@ export function registerPlatformsRoutes(app: FastifyInstance, context: ServerCon
           course,
           unit_ids: unitIds,
           operation: request.body?.operation ?? 'study',
+          follow_unlocks: followUnlocks,
         }),
       };
     },
