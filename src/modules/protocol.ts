@@ -69,6 +69,7 @@ export type Unit = {
   name: string;
   chapter_id: string;
   chapter_name: string;
+  chapter_order?: number;
   lesson_id: string;
   kind: string;
   duration_seconds?: number | null;
