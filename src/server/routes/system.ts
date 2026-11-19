@@ -35,7 +35,7 @@ export function registerSystemRoutes(app: FastifyInstance, { db, manager }: Serv
       setup_required: !hasUsers(db),
       registration: registrationSettings(db),
       quiet_hours: current ? quietFor(db, current.user.id) : quietStatus(nowSeconds()),
-      capabilities: { team_accounts: true, modules: true, platforms: true, follow_unlocks: ['cx'], jobs: ['study', ...(current?.user.role === 'admin' ? ['trial'] : []), 'review', 'answer', 'mastery', 'meeting', 'qa', 'ask'], task_controls: ['pause', 'resume', 'stop', 'move', 'answers', 'confirm', 'readback'], models: true, exports: ['md', 'docx', 'json', 'csv', 'log'], logs: true, log_formats: ['log'], admin: true, sse: false },
+      capabilities: { team_accounts: true, modules: true, platforms: true, deferred_study: true, jobs: ['study', ...(current?.user.role === 'admin' ? ['trial'] : []), 'review', 'answer', 'mastery', 'meeting', 'qa', 'ask'], task_controls: ['pause', 'resume', 'stop', 'move', 'answers', 'confirm', 'readback'], models: true, exports: ['md', 'docx', 'json', 'csv', 'log'], logs: true, log_formats: ['log'], admin: true, sse: false },
     };
   });
 }

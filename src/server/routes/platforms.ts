@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ServerContext } from '../context.ts';
 import { AppError, badRequest } from '../../core/errors.ts';
 import { accountQuota, accountScope, createPlatformAccount, requirePlatformAccount, taskPlatformOwner } from '../../core/platform-accounts.ts';
+import { deferredChapterId } from '../../modules/protocol.ts';
 
 export function registerPlatformsRoutes(app: FastifyInstance, context: ServerContext): void {
   const { manager, jobs } = context;
@@ -114,27 +115,36 @@ export function registerPlatformsRoutes(app: FastifyInstance, context: ServerCon
     },
   );
 
-  app.post<{ Params: { pid: string; id: string; rid: string }; Body: { unit_ids?: string[]; operation?: string; follow_unlocks?: boolean } }>(
+  app.post<{ Params: { pid: string; id: string; rid: string }; Body: { unit_ids?: string[]; operation?: string } }>(
     '/api/platforms/:pid/courses/:id/:rid/study',
     async (request) => {
       const current = requireIdentity(request, { write: true });
       const { pid, id, rid } = request.params;
-      const followUnlocks = request.body?.follow_unlocks === true;
-      const unitIds = request.body?.unit_ids ?? (followUnlocks ? [] : undefined);
+      const unitIds = request.body?.unit_ids;
       if (!Array.isArray(unitIds) || unitIds.some((value) => typeof value !== 'string')) {
         throw badRequest('请提供 unit_ids');
       }
-      const courses = await manager.courses(platformOwner(request, current.user.id, pid), pid);
+      const owner = platformOwner(request, current.user.id, pid);
+      const courses = await manager.courses(owner, pid);
       const course = courses.find((item) => item.id === id && item.recruit_id === rid);
       if (!course) throw new AppError(404, 'not_found', '找不到这门课程');
+      const operation = request.body?.operation ?? 'study';
+      const deferredIds = pid === 'cx' && operation === 'study' ? unitIds.filter(deferredChapterId) : [];
+      if (deferredIds.length) {
+        const units = await manager.units(owner, pid, course);
+        const byId = new Map(units.map(unit => [unit.id, unit]));
+        const chapters = new Set(units.map(unit => unit.chapter_id));
+        if (deferredIds.some(id => byId.has(id) ? !byId.get(id)?.selectable_after_unlock : !chapters.has(deferredChapterId(id)!))) {
+          throw badRequest('所选待解锁章节已变化，请刷新目录后重新选择');
+        }
+      }
       return {
         task: jobs.create(current.user.id, {
           platform: pid,
           account_id: (request.query as { account_id?: string }).account_id,
           course,
           unit_ids: unitIds,
-          operation: request.body?.operation ?? 'study',
-          follow_unlocks: followUnlocks,
+          operation,
         }),
       };
     },
