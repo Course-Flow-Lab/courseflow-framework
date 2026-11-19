@@ -325,13 +325,17 @@ export class JobEngine {
 
   create(
     owner: string,
-    input: { platform: string; account_id?: string; course: Course; unit_ids: string[]; operation: string; options?: Record<string, unknown> },
+    input: { platform: string; account_id?: string; course: Course; unit_ids: string[]; operation: string; options?: Record<string, unknown>; follow_unlocks?: boolean },
   ): TaskView {
     const ownerRow = this.db.get<{ disabled: number; role: string }>('SELECT disabled,role FROM users WHERE id=?1', owner);
     if (ownerRow?.disabled !== 0) throw conflict('user_disabled', '此用户已停用');
     if (input.operation === 'trial' && ownerRow.role !== 'admin') throw forbidden('短时试跑仅供管理员诊断使用');
     const unitIds = [...new Set(input.unit_ids)];
-    if (unitIds.length === 0) throw badRequest('请先选择学习单元');
+    const followUnlocks = input.follow_unlocks === true;
+    if (followUnlocks && (input.platform !== 'cx' || input.operation !== 'study' || unitIds.length !== 0)) {
+      throw badRequest('超星连续学习适用于整门课程，请清空手动选择');
+    }
+    if (!followUnlocks && unitIds.length === 0) throw badRequest('请先选择学习单元');
     if (unitIds.length > MAX_UNITS) throw badRequest('一次最多选择 200 个单元');
     if (!['study', 'trial', 'review', 'answer', 'mastery', 'meeting', 'qa', 'ask'].includes(input.operation)) throw badRequest('框架尚未提供此任务类型', 'unsupported_operation');
     const count = this.db.get<{ count: number }>("SELECT count(*) AS count FROM tasks WHERE owner=?1 AND state IN ('queued','running','paused')", owner)?.count ?? 0;
@@ -372,6 +376,7 @@ export class JobEngine {
     );
     this.event(id, 'created', `已创建任务：${input.course.name}`);
     const data: JobInput = { account, connection, version: this.manager.moduleVersion(input.platform), options: { parallel_study: user.parallel_study, speedup: user.speedup, review_minutes: user.review_minutes, model_id: user.model_id, ...input.options, ...(['qa', 'ask'].includes(input.operation) ? { allow_over_limit: user.qa_allow_over_limit } : {}) } };
+    data.options.follow_unlocks = followUnlocks;
     const sealed = this.vault.sealJson(owner, `job/${id}/input`, data);
     this.db.run('INSERT INTO task_inputs VALUES(?1,?2)', id, new Uint8Array(sealed));
     const order = this.db.get<{ n: number }>('SELECT coalesce(max(position),0)+1 AS n FROM task_order')!.n;
@@ -507,7 +512,7 @@ export class JobEngine {
     );
   }
 
-  private update(id: string, fields: Partial<Pick<TaskRow, 'state' | 'progress' | 'detail' | 'checkpoint'>>): void {
+  private update(id: string, fields: Partial<Pick<TaskRow, 'state' | 'progress' | 'detail' | 'checkpoint' | 'units'>>): void {
     const sets: string[] = [];
     const values: Array<string | number | null | Uint8Array> = [];
     let index = 1;
@@ -568,14 +573,15 @@ export class JobEngine {
         }
         return;
       }
-      const units = await this.manager.units(sessionOwner, current.platform, course);
+      const followUnlocks = input.options.follow_unlocks === true && current.platform === 'cx' && current.operation === 'study';
+      let units = await this.manager.units(sessionOwner, current.platform, course, followUnlocks);
       if (controller.signal.aborted || !this.stillRunning(taskId, generation)) return;
       const selected = unitIds
         .map((id) => units.find((unit) => unit.id === id))
         .filter((unit): unit is Unit => unit !== undefined);
-      if (selected.length === 0) throw conflict('unit_not_found', '所选单元已不存在');
+      if (!followUnlocks && selected.length === 0) throw conflict('unit_not_found', '所选单元已不存在');
 
-      let checkpoint = this.loadCheckpoint(current);
+      const checkpoint = this.loadCheckpoint(current);
       // A unit the platform already reports as completed is not studied again: asking the
       // gateway to open it is what answers `421` on a finished course.
       for (const unit of selected) {
@@ -584,18 +590,63 @@ export class JobEngine {
         }
       }
       if (checkpoint.completed.length > 0) this.saveCheckpoint(taskId, current.owner, checkpoint);
-      const pending = selected.filter((unit) => !checkpoint.completed.includes(unit.id));
-      if (pending.length === 0) {
+      let pending = followUnlocks ? [] : selected.filter((unit) => !checkpoint.completed.includes(unit.id));
+      if (!followUnlocks && pending.length === 0) {
         this.update(taskId, { state: 'completed', progress: 100, detail: '所选单元均已完成，无需继续学习' });
         this.event(taskId, 'completed', '所选单元均已完成');
         return;
       }
       let completed = checkpoint.completed.length;
+      const discovered = new Set(unitIds);
+      const done = new Set(checkpoint.completed);
+      let refreshAttempts = 0;
+      let refresh = false;
 
-      for (const unit of pending) {
+      while (pending.length || followUnlocks) {
+        if (!pending.length) {
+          if (refresh) {
+            this.update(taskId, { detail: '正在刷新超星目录，检查新解锁的单元' });
+            units = await this.manager.units(sessionOwner, current.platform, course, true);
+            if (!this.stillRunning(taskId, generation)) return;
+          }
+          for (const unit of units) {
+            if (discovered.has(unit.id) && unit.state === 'completed' && !done.has(unit.id)) {
+              done.add(unit.id);
+              checkpoint.completed.push(unit.id);
+            }
+          }
+          completed = checkpoint.completed.length;
+          this.saveCheckpoint(taskId, current.owner, checkpoint);
+          pending = units.filter(unit => unit.selectable && unit.state !== 'completed' && !done.has(unit.id));
+          if (!pending.length) {
+            const blocked = units.filter(unit => !unit.selectable && unit.state !== 'completed' && !done.has(unit.id));
+            if (!blocked.length) break;
+            if (refreshAttempts < 2 && blocked.some(unit => unit.id.startsWith('locked:'))) {
+              refreshAttempts += 1;
+              await sleep(3000, controller.signal);
+              if (!this.stillRunning(taskId, generation)) return;
+              refresh = true;
+              continue;
+            }
+            const detail = `还有 ${blocked.length} 项未开放或需人工处理（${blocked[0].name}），可处理后继续此任务`;
+            this.update(taskId, { state: 'paused', detail });
+            this.event(taskId, 'paused', detail);
+            return;
+          }
+          const added = pending.filter(unit => !discovered.has(unit.id));
+          for (const unit of added) discovered.add(unit.id);
+          if (added.length) {
+            this.update(taskId, { units: JSON.stringify([...discovered]) });
+            this.event(taskId, 'units_discovered', `已加入 ${added.length} 个可学习单元`);
+          }
+          refresh = true;
+          refreshAttempts = 0;
+        }
+        const unit = pending.shift()!;
+        const total = followUnlocks ? discovered.size : selected.length;
         this.update(taskId, {
           detail: `正在学习：${unit.name}`,
-          progress: Math.max(current.progress ?? 0, Math.round((completed / selected.length) * 100)),
+          progress: followUnlocks ? Math.min(99, Math.round(completed / total * 100)) : Math.max(current.progress ?? 0, Math.round(completed / total * 100)),
         });
         let steps = 0;
         while (steps < STEP_CAP) {
@@ -663,8 +714,8 @@ export class JobEngine {
               ? Math.max(0, Math.min(1, seconds / duration)) : 0;
             this.update(taskId, {
               detail: typeof outcome.detail === 'string' ? `${unit.name}：${outcome.detail}` : `正在学习：${unit.name}（已 ${Number.isFinite(seconds) ? seconds : 0} 秒）`,
-              progress: Math.max(current.progress ?? 0,
-                Math.min(99, Math.round(((completed + fraction) / selected.length) * 100))),
+              progress: Math.max(followUnlocks ? 0 : current.progress ?? 0,
+                Math.min(99, Math.round(((completed + fraction) / total) * 100))),
             });
             const wait = Math.min(Number(outcome.wait_ms ?? 1000) || 1000, 60_000);
             await sleep(wait, controller.signal);
@@ -672,11 +723,12 @@ export class JobEngine {
           }
           if (status === 'completed') {
             checkpoint.completed.push(unit.id);
+            done.add(unit.id);
             checkpoint.positions[unit.id] = outcome.checkpoint ?? null;
             completed = checkpoint.completed.length;
             this.saveCheckpoint(taskId, current.owner, checkpoint);
             this.update(taskId, {
-              progress: Math.round((completed / selected.length) * 100),
+              progress: Math.min(followUnlocks ? 99 : 100, Math.round((completed / total) * 100)),
               detail: `已完成：${unit.name}`,
             });
             this.event(taskId, 'unit_completed', unit.name);
@@ -692,7 +744,7 @@ export class JobEngine {
           }
           throw conflict('module_protocol_error', `模块返回了未知状态：${status}`);
         }
-        if (steps >= STEP_CAP) {
+        if (!done.has(unit.id) && steps >= STEP_CAP) {
           this.update(taskId, { state: 'paused', detail: '单元步数过多，已暂停等待人工检查' });
           return;
         }

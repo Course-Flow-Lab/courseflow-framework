@@ -83,3 +83,59 @@ test('超星真实 RPC 在模拟慢接口下只扫描所选课程且不阻塞登
   assert.equal(network.filter(path=>path.endsWith('/studentcourse')).length,1);
   assert.equal(runtime.db.get<{n:number}>('SELECT COUNT(*) AS n FROM write_ledger')!.n,0,'目录和登录不能产生学习或交卷写入');
 });
+
+test('超星连续学习刷新解锁状态，并从仍锁定的章节继续', {skip:!available,timeout:30_000}, async t => {
+  const {runtime}=await boot('courseflow-cx-chain-');t.after(()=>runtime.close());
+  runtime.manager.install(moduleDir);runtime.manager.configure('cx',{source:'live',python});
+  const session=await setupAdmin(runtime);
+  const written: string[]=[];
+  let chapterThreeOpen=false;
+  t.mock.method(globalThis,'fetch',async (input:URL)=>{
+    const url=new URL(input);
+    switch(url.pathname){
+      case '/fanyalogin': return new Response('{"status":true}',{headers:{'set-cookie':'_uid=7; Domain=chaoxing.com; Path=/; Secure'}});
+      case '/space/index':
+      case '/mooc2-ans/visit/interaction': return new Response('');
+      case '/mooc2-ans/visit/courselistdata':
+        return new Response('<div class="course"><a href="/a?cpi=33"></a><input class="clazzId" value="22"><input class="courseId" value="11"><span class="course-name">合成课程</span></div>');
+      case '/mooc2-ans/mycourse/studentcourse':
+        return new Response([true,written.includes('job-1'),chapterThreeOpen].map((open,index)=>
+          `<div id="cur${index+1}"><a class="clicktitle">章节 ${index+1}</a>${open?'':'<span class="bntHoverTips">完成前置任务后解锁</span>'}</div>`).join(''));
+      case '/gas/clazz':
+      case '/api/phone/jobfinishedList':
+      case '/api/phone/jobunfinishedList': return Response.json({data:[]});
+      case '/mooc-ans/knowledge/cards': {
+        if(url.searchParams.get('num')!=='0') return new Response('');
+        const point=url.searchParams.get('knowledgeid');
+        assert.ok(point==='1'||point==='2'&&written.includes('job-1')||point==='3'&&chapterThreeOpen);
+        const id='job-'+point;
+        return new Response('mArg='+JSON.stringify({attachments:[{jobid:id,type:'document',isPassed:written.includes(id),property:{name:'文档 '+point}}]})+';');
+      }
+      case '/mooc-ans/job/document':
+        written.push(url.searchParams.get('jobid')!);
+        return Response.json({status:true});
+      default: assert.fail('未声明的模拟网络请求：'+url.pathname);
+    }
+  });
+  const begin=await call(runtime,{method:'POST',url:'/api/platforms/cx/login',session,body:{method:'password'}});
+  const challenge=begin.body.challenge.session;
+  await call(runtime,{method:'POST',url:`/api/platforms/cx/login/${challenge}/submit`,session,body:{fields:{username:'synthetic',password:'synthetic'}}});
+  assert.equal((await call(runtime,{method:'POST',url:`/api/platforms/cx/login/${challenge}/poll`,session})).body.state,'connected');
+  const root='/api/platforms/cx/courses/11/22';
+  const before=await call(runtime,{url:root+'/units',session});
+  assert.deepEqual(before.body.units.map((unit:{id:string})=>unit.id),['job-1','locked:2','locked:3']);
+  const created=await call(runtime,{method:'POST',url:root+'/study',session,body:{follow_unlocks:true}});
+  assert.equal(created.status,200,JSON.stringify(created.body));
+  const id=created.body.task.id;
+  const paused=await waitFor(runtime,session,id,'paused');
+  assert.deepEqual(paused.units,['job-1','job-2']);
+  assert.deepEqual(paused.completed,paused.units);
+  assert.match(paused.detail,/还有 1 项/);
+  chapterThreeOpen=true;
+  assert.equal((await call(runtime,{method:'POST',url:'/api/tasks/'+id+'/resume',session})).status,200);
+  const completed=await waitFor(runtime,session,id,'completed');
+  assert.equal(completed.progress,100);
+  assert.deepEqual(completed.units,['job-1','job-2','job-3']);
+  assert.deepEqual(completed.completed,completed.units);
+  assert.deepEqual(written,completed.units,'只执行平台已解锁且尚未完成的真实单元');
+});
