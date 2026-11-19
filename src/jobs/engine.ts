@@ -596,6 +596,23 @@ export class JobEngine {
       }
       let completed = checkpoint.completed.length;
       let scheduled = new Set(unitIds);
+      if (deferredStudy) {
+        let latestPrerequisiteBoundary = -1;
+        for (const unit of units) {
+          if (unit.selectable_after_unlock && scheduled.has(unit.id) && unit.chapter_order !== undefined) {
+            latestPrerequisiteBoundary = Math.max(latestPrerequisiteBoundary, unit.chapter_order);
+          }
+        }
+        const prerequisites = units.filter(unit => unit.chapter_order !== undefined && unit.chapter_order < latestPrerequisiteBoundary &&
+          unit.state !== 'completed' && (unit.selectable || unit.selectable_after_unlock) && !checkpoint.completed.includes(unit.id));
+        prerequisites.sort((first, next) => first.chapter_order! - next.chapter_order!);
+        const ordered = new Set([...prerequisites.map(unit => unit.id), ...scheduled]);
+        if (ordered.size > scheduled.size) {
+          this.update(taskId, { units: JSON.stringify([...ordered]) });
+          this.event(taskId, 'prerequisites_added', `已补选 ${ordered.size - scheduled.size} 个前置学习单元`);
+        }
+        scheduled = ordered;
+      }
       const done = new Set(checkpoint.completed);
       let refreshAttempts = 0;
       let refresh = false;

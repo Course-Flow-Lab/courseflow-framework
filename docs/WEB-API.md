@@ -54,7 +54,7 @@ async function close() {
 
 课程列表未提供进度时，宿主只复用显式读取目录后缓存的进度，不在获取课程列表时扫描全部课程。目录接口在首次响应的 `course` 中即附加 `unit_progress: {completed,total,unknown}`；全部单元状态已知且非空时，以已完成单元数除以总单元数提供 `progress` 和 `progress_source: "units"`。此值是目录完成度，不代表平台成绩或视频观看时长；平台已提供的百分比（含 0）保持优先。存在未知状态时保留完成数量，不推断完整百分比。结果按用户、平台会话和课程缓存一分钟，供后续课程列表复用；前端将已读取的课程对象同步回同一平台、课程及班级的卡片。相同会话、方法与课程的并发目录请求共用一次分页扫描；失败后可重新查询。
 
-当 `capabilities.deferred_study` 为 `true`，超星目录中标为 `selectable_after_unlock: true` 的章节可与普通单元一起放入 `POST /api/platforms/cx/courses/:id/:rid/study` 的 `unit_ids`。平台解锁已选章节后，任务会用实际学习单元替换 `task.units` 中的章节占位。所选内容仍需解锁或人工处理时，处理后可继续原任务。
+当 `capabilities.deferred_study` 为 `true`，超星目录中标为 `selectable_after_unlock: true` 的章节可与普通单元一起放入 `POST /api/platforms/cx/courses/:id/:rid/study` 的 `unit_ids`。客户端和任务执行器按目录的 `chapter_order` 补选前序未完成的可学单元。平台解锁已选章节后，任务会用实际学习单元替换 `task.units` 中的章节占位。所选内容仍需解锁或人工处理时，处理后可继续原任务。
 
 
 ## 站点管理

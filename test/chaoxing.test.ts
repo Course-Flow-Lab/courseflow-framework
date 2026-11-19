@@ -126,12 +126,13 @@ test('超星勾选待解锁章节后接续学习，只执行所选单元', {skip
   assert.deepEqual(before.body.units.filter((unit:{selectable_after_unlock?:boolean})=>unit.selectable_after_unlock).map((unit:{id:string})=>unit.id),['locked:2','locked:3']);
   const invalid=await call(runtime,{method:'POST',url:root+'/study',session,body:{unit_ids:['locked:5']}});
   assert.equal(invalid.status,400);
-  const created=await call(runtime,{method:'POST',url:root+'/study',session,body:{unit_ids:['job-1','locked:2','locked:3']}});
+  const created=await call(runtime,{method:'POST',url:root+'/study',session,body:{unit_ids:['locked:3']}});
   assert.equal(created.status,200,JSON.stringify(created.body));
   const id=created.body.task.id;
   const paused=await waitFor(runtime,session,id,'paused');
   assert.deepEqual(paused.units,['job-1','job-2','locked:3']);
   assert.deepEqual(paused.completed,['job-1','job-2']);
+  assert.ok((await call(runtime,{url:'/api/tasks/'+id,session})).body.events.some((event:{kind:string})=>event.kind==='prerequisites_added'));
   assert.match(paused.detail,/还有 1 项/);
   chapterThreeOpen=true;
   assert.equal((await call(runtime,{method:'POST',url:'/api/tasks/'+id+'/resume',session})).status,200);
