@@ -3,7 +3,7 @@ import type { ServerContext } from '../context.ts';
 import { badRequest } from '../../core/errors.ts';
 
 export function registerModulesRoutes(app: FastifyInstance, context: ServerContext): void {
-  const { manager } = context;
+  const { manager, jobs } = context;
   const { requireIdentity } = context.access;
   app.get('/api/modules', async (request) => {
     requireIdentity(request, { admin: true });
@@ -52,7 +52,9 @@ export function registerModulesRoutes(app: FastifyInstance, context: ServerConte
     requireIdentity(request, { write: true, admin: true });
     const source = request.body?.path;
     if (!source) throw badRequest('请提供模块路径');
+    const previous = new Map(manager.list().map(({ id, version }) => [id, version]));
     const row = manager.install(source);
+    if (previous.has(row.id) && previous.get(row.id) !== row.version) jobs.pauseForModuleUpdate(row.id);
     return { module: { id: row.id, version: row.version, sha256: row.sha256 } };
   });
 }

@@ -74,10 +74,16 @@ async function close() {
 | `GET /api/admin/tasks` | `owner`、`state` 过滤；`sort: updated / created / oldest / state`，默认最近更新；`offset` 分页，每页 100 项，返回 `total`、`offset`、`limit`、`sort` |
 | `GET /api/admin/tasks/:id` | 任务概况和最近事件，不返回作答正文或凭据 |
 | `DELETE /api/admin/tasks/:id` | 删除任务及其本站输入、队列与事件；执行中的任务先停止，仍在退出的执行器与未核对交卷结果拒绝删除 |
-| `POST /api/admin/tasks/:id/:action` | `pause`、`resume`、`stop` 或 `move`；排序提供 `direction: up 或 down` |
+| `POST /api/admin/tasks/:id/:action` | `pause`、`resume`、`stop`、`move` 或 `migrate`。排序提供 `direction`，迁移提供 `to_version` |
 | `GET /api/admin/tasks/:id/logs` | 下载该任务的纯文本日志 |
 
 管理任务操作记录操作者；删除记录保留在审计日志，独立写入凭证和交卷锁不随任务清除。删除只作用于本站，不删除平台进度或作答。排序在分页前完成，同值按创建时间和任务标识稳定排列，队列上移下移仍只控制所属用户的执行顺序。管理员上限和并行许可存于现有 `site_settings`，无需数据库结构或模块协议迁移。默认值保留原有 1–8 项个人并发设置；调度器对停用账号拒绝创建和继续任务。
+
+## 模块升级后的任务迁移
+
+暂停任务保存的模块版本与已安装版本不同时，任务响应附带 `module_update: { from_version, to_version, blocked_reason? }`。`blocked_reason` 表示需要先处理的情况，例如检查点不兼容或交卷结果待核对。
+
+任务所有者调用 `POST /api/tasks/:id/migrate`，管理员可调用 `POST /api/admin/tasks/:id/migrate`。两者请求体均为 `{ "to_version": "0.3.9" }`。服务端重新检查目标版本、原账号、模块兼容性和提交状态。成功返回 `{ task }`，任务保持暂停，原检查点及执行记录保留。之后使用原 `resume` 接口继续。版本在操作前再次变化时返回 409 `module_version_changed`。
 
 ## 纯文本日志
 

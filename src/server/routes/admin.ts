@@ -177,12 +177,13 @@ export function registerAdminRoutes(app: FastifyInstance, c: ServerContext): voi
     audit(who.user.id, '删除站点任务', found.id);
     return { deleted: true, id: found.id };
   });
-  app.post<{ Params: { id: string; action: string }; Body: { direction?: string } }>('/api/admin/tasks/:id/:action', async (request) => {
+  app.post<{ Params: { id: string; action: string }; Body: { direction?: string; to_version?: string } }>('/api/admin/tasks/:id/:action', async (request) => {
     const who = access.requireIdentity(request, { admin: true, write: true }), found = task(request.params.id);
     const action = request.params.action;
-    const labels: Record<string, string> = { pause: '暂停任务', resume: '继续任务', stop: '停止任务', move: '调整任务顺序' };
-    if (!labels[action]) throw notFound('任务操作不存在');
+    const labels: Record<string, string> = { pause: '暂停任务', resume: '继续任务', stop: '停止任务', move: '调整任务顺序', migrate: '迁移任务模块版本' };
+    if (!Object.hasOwn(labels, action)) throw notFound('任务操作不存在');
     const result = action === 'move' ? jobs.move(found.owner, found.id, request.body?.direction ?? '')
+      : action === 'migrate' ? jobs.migrate(found.owner, found.id, request.body?.to_version)
       : action === 'pause' ? jobs.pause(found.owner, found.id) : action === 'resume' ? jobs.resume(found.owner, found.id) : jobs.stop(found.owner, found.id);
     noteTask(found.id, who.user.id, labels[action]!);
     return { task: { ...result, owner: found.owner, username: found.username } };
