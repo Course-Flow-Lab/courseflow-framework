@@ -1,7 +1,7 @@
 import type { Db } from '../core/db.ts';
 import type { Vault } from '../core/vault.ts';
-import type { ModuleManager } from '../modules/manager.ts';
-import type { Course, Unit, Question } from '../modules/protocol.ts';
+import type { ModuleManager, ModuleRow } from '../modules/manager.ts';
+import type { Course, Manifest, Unit, Question } from '../modules/protocol.ts';
 import { nowSeconds, randomId, sleep } from '../core/domain.ts';
 import { badRequest, conflict, forbidden, notFound } from '../core/errors.ts';
 import { effectiveTaskPolicy } from '../core/task-policy.ts';
@@ -46,6 +46,7 @@ export type TaskView = {
   completed: string[];
   created_at: number;
   updated_at: number;
+  module_update?: { from_version: string; to_version: string; blocked_reason?: string };
 };
 
 export type Checkpoint = { completed: string[]; current?: string; seconds?: number; positions: Record<string, unknown>; [key: string]: any };
@@ -53,6 +54,8 @@ export type JobInput = { options: Record<string, unknown>; account: string; conn
 
 const MAX_UNITS = 200;
 const STEP_CAP = 400;
+const MODULE_VERSION_CHANGED = '平台模块版本已变化，请在任务详情中核对迁移状态';
+type TaskModule = Pick<ModuleRow, 'version' | 'enabled' | 'manifest'>;
 
 /**
  * The study driver. It owns everything the contract keeps out of a module: durability,
@@ -163,6 +166,7 @@ export class JobEngine {
     if (!row) throw notFound('找不到这个任务');
     const cp = this.loadCheckpoint(row);
     if (row.state !== 'paused' || cp.workflow?.phase !== 'waiting_submit') throw conflict('invalid_state', '当前任务不在等待交卷确认的阶段');
+    this.requireCurrentModule(row);
     if (cp.workflow.attempt.expires_at != null && cp.workflow.attempt.expires_at <= nowSeconds()) throw badRequest('本次作答已经截止');
     cp.workflow.confirmed = true; this.saveCheckpoint(id, owner, cp);
     this.event(id, 'submit_confirmed', '用户已确认本次交卷');
@@ -209,15 +213,47 @@ export class JobEngine {
     return this.get(owner, id);
   }
 
-  private input(row: TaskRow): JobInput {
+  private storedInput(row: TaskRow): JobInput | undefined {
     const stored = this.db.get<{ sealed: Uint8Array }>('SELECT sealed FROM task_inputs WHERE task_id=?1', row.id);
-    if (stored) return this.vault.openJson<JobInput>(row.owner, `job/${row.id}/input`, Buffer.from(stored.sealed));
+    if (!stored) return undefined;
+    try {
+      return this.vault.openJson<JobInput>(row.owner, `job/${row.id}/input`, Buffer.from(stored.sealed));
+    } catch {
+      throw conflict('checkpoint_unavailable', '任务输入无法解密，请核对站点密钥');
+    }
+  }
+  private input(row: TaskRow): JobInput {
+    const stored = this.storedInput(row);
+    if (stored) return stored;
     const input: JobInput = { account: this.manager.accountKey(taskPlatformOwner(this.db, row), row.platform) ?? '', connection: this.manager.connectionId(taskPlatformOwner(this.db, row), row.platform) ?? '', version: this.manager.moduleVersion(row.platform), options: preferences(this.db, row.owner) as unknown as Record<string, unknown> };
     this.saveInput(row, input); return input;
   }
   private saveInput(row: TaskRow, input: JobInput): void {
     const sealed = this.vault.sealJson(row.owner, `job/${row.id}/input`, input);
     this.db.run('INSERT INTO task_inputs VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET sealed=excluded.sealed', row.id, new Uint8Array(sealed));
+  }
+  private installedModule(platform: string): TaskModule | undefined {
+    return this.db.get<TaskModule>('SELECT version,enabled,manifest FROM modules WHERE id=?1', platform);
+  }
+  private requireCurrentModule(row: TaskRow): void {
+    const input = this.storedInput(row);
+    const module = input && this.installedModule(row.platform);
+    if (module && module.version !== input.version) throw conflict('module_version_changed', MODULE_VERSION_CHANGED);
+  }
+  private moduleUpdate(row: TaskRow, input: JobInput, module: TaskModule, checkpoint?: Checkpoint): NonNullable<TaskView['module_update']> {
+    const result: NonNullable<TaskView['module_update']> = { from_version: input.version, to_version: module.version };
+    const manifest = JSON.parse(module.manifest) as Manifest;
+    // These ZHS packages predate the manifest field and share the same checkpoint format.
+    const knownZhsUpgrade = row.platform === 'zhs' && module.version === '0.3.9' && input.version === '0.3.8';
+    if (module.enabled !== 1) result.blocked_reason = '请先启用平台模块';
+    else if (!manifest.platform.operations.includes(row.operation)) result.blocked_reason = '当前模块版本不支持此任务类型';
+    else if (!knownZhsUpgrade && !manifest.checkpoint_compatible_from?.includes(input.version)) result.blocked_reason = '当前模块未声明兼容原版本的检查点';
+    else if (!checkpoint) result.blocked_reason = '任务检查点无法读取，请核对站点密钥';
+    else if (['opening', 'resetting'].includes(checkpoint.workflow?.phase)) result.blocked_reason = '请先在官方页面核对开卷或重做结果';
+    else if (['submitting', 'readback'].includes(checkpoint.workflow?.phase) || this.db.get("SELECT 1 FROM operation_locks WHERE task_id=?1 AND state IN ('pending','unknown')", row.id)) {
+      result.blocked_reason = '请先回读并确认平台提交结果';
+    }
+    return result;
   }
   private canRun(row: TaskRow): boolean {
     const running = this.db.all<TaskRow>("SELECT * FROM tasks WHERE state='running' AND id!=?1", row.id);
@@ -242,7 +278,13 @@ export class JobEngine {
         this.controllers.get(row.id)?.abort(); this.manager.cancelJob(row.id); this.event(row.id, 'paused', '夜间暂停');
       }
       for (const row of this.db.all<TaskRow>("SELECT * FROM tasks WHERE state='paused' AND detail='夜间暂停，将在 07:00 自动继续'")) {
-        if (!quietFor(this.db, row.owner).active) this.resume(row.owner, row.id);
+        if (quietFor(this.db, row.owner).active) continue;
+        try { this.resume(row.owner, row.id); }
+        catch (error) {
+          if ((error as { code?: string }).code !== 'module_version_changed') throw error;
+          this.update(row.id, { detail: MODULE_VERSION_CHANGED });
+          this.event(row.id, 'paused', MODULE_VERSION_CHANGED);
+        }
       }
       const queued = this.db.all<TaskRow>("SELECT t.* FROM tasks t LEFT JOIN task_order o ON o.task_id=t.id WHERE t.state='queued' ORDER BY coalesce(o.position,t.created_at)");
       for (const row of queued) if (!this.executions.has(row.id)) this.launch(row.id);
@@ -250,14 +292,15 @@ export class JobEngine {
   }
 
   private view(row: TaskRow): TaskView {
-    let checkpoint: Checkpoint = { completed: [], positions: {} };
-    if (row.checkpoint) {
-      try {
-        checkpoint = JSON.parse(
-          this.vault.open(row.owner, `job/${row.id}`, Buffer.from(row.checkpoint)).toString('utf8'),
-        ) as Checkpoint;
-      } catch {
-        checkpoint = { completed: [], positions: {} };
+    let checkpoint: Checkpoint | undefined;
+    try { checkpoint = this.loadCheckpoint(row); } catch { /* Keep the task visible after a read error. */ }
+    let moduleUpdate: TaskView['module_update'];
+    if (row.state === 'paused') {
+      let input: JobInput | undefined;
+      try { input = this.storedInput(row); } catch { /* The migration route reports the read error. */ }
+      const module = input && this.installedModule(row.platform);
+      if (input && module && input.version !== module.version) {
+        moduleUpdate = this.moduleUpdate(row, input, module, checkpoint);
       }
     }
     return {
@@ -273,9 +316,10 @@ export class JobEngine {
       progress: row.progress,
       detail: row.detail,
       units: JSON.parse(row.units) as string[],
-      completed: checkpoint.completed,
+      completed: checkpoint?.completed ?? [],
       created_at: row.created_at,
       updated_at: row.updated_at,
+      ...(moduleUpdate ? { module_update: moduleUpdate } : {}),
     };
   }
 
@@ -374,14 +418,52 @@ export class JobEngine {
     if (!['queued', 'running'].includes(task.state)) {
       throw conflict('invalid_state', '只有排队或运行中的任务可以暂停');
     }
+    this.pauseActive(id, '已由用户暂停');
+    return this.get(owner, id);
+  }
+
+  pauseForModuleUpdate(platform: string): void {
+    const rows = this.db.all<{ id: string }>("SELECT id FROM tasks WHERE platform=?1 AND state IN ('queued','running')", platform);
+    for (const row of rows) this.pauseActive(row.id, MODULE_VERSION_CHANGED);
+  }
+
+  private pauseActive(id: string, detail: string): void {
     this.db.run(
-      "UPDATE tasks SET state = 'paused', generation = generation + 1, detail = '已由用户暂停', updated_at = ?1 WHERE id = ?2",
-      nowSeconds(), id,
+      "UPDATE tasks SET state = 'paused', generation = generation + 1, detail = ?1, updated_at = ?2 WHERE id = ?3",
+      detail, nowSeconds(), id,
     );
-    this.event(id, 'paused', '已由用户暂停');
+    this.event(id, 'paused', detail);
     this.controllers.get(id)?.abort();
     this.manager.cancelJob(id);
-    return this.get(owner, id);
+  }
+
+  migrate(owner: string, id: string, toVersion: unknown): TaskView {
+    if (typeof toVersion !== 'string' || !toVersion) throw badRequest('请指定迁移的模块版本');
+    return this.db.transaction(() => {
+      const row = this.db.get<TaskRow>('SELECT * FROM tasks WHERE id=?1 AND owner=?2', id, owner);
+      if (!row) throw notFound('找不到这个任务');
+      if (this.db.get<{ disabled: number }>('SELECT disabled FROM users WHERE id=?1', owner)?.disabled !== 0) throw conflict('user_disabled', '此用户已停用');
+      if (row.state !== 'paused') throw conflict('invalid_state', '只有已暂停的任务可以迁移');
+      if (this.controllers.has(id)) throw conflict('task_stopping', '任务正在停止，请稍后再迁移');
+      const module = this.installedModule(row.platform);
+      if (!module) throw conflict('module_unavailable', '平台模块未安装');
+      if (module.version !== toVersion) throw conflict('module_version_changed', '模块版本已变化，请刷新任务后重新核对');
+      const input = this.storedInput(row);
+      if (!input) throw conflict('checkpoint_unavailable', '任务缺少原始模块版本和账号记录');
+      if (input.version === module.version) return this.view(row);
+
+      const update = this.moduleUpdate(row, input, module, this.loadCheckpoint(row));
+      if (update.blocked_reason) throw conflict('task_migration_blocked', update.blocked_reason);
+      const sessionOwner = taskPlatformOwner(this.db, row);
+      if (!input.account || input.account !== this.manager.accountKey(sessionOwner, row.platform)) {
+        throw conflict('platform_account_changed', '请连接任务原有的平台账号后再迁移');
+      }
+
+      this.saveInput(row, { ...input, version: module.version });
+      this.update(id, { detail: `已迁移到模块 ${module.version}，可以继续任务` });
+      this.event(id, 'module_migrated', `模块 ${input.version} → ${module.version}，保留原任务检查点`);
+      return this.get(owner, id);
+    });
   }
 
   resume(owner: string, id: string): TaskView {
@@ -390,6 +472,7 @@ export class JobEngine {
     if (this.db.get<{ disabled: number }>('SELECT disabled FROM users WHERE id=?1', owner)?.disabled !== 0) throw conflict('user_disabled', '此用户已停用');
     if (row.state !== 'paused') throw conflict('invalid_state', '只有已暂停的任务可以继续');
     if (quietFor(this.db, owner).active) throw conflict('quiet_hours', '夜间暂停期间不能继续任务');
+    this.requireCurrentModule(row);
     this.db.run(
       "UPDATE tasks SET state = 'queued', generation = generation + 1, detail = '等待继续', updated_at = ?1 WHERE id = ?2",
       nowSeconds(),
@@ -452,13 +535,13 @@ export class JobEngine {
       this.update(taskId, { state: 'running', detail: '准备目录' });
       const current = this.db.get<TaskRow>('SELECT * FROM tasks WHERE id = ?1', taskId)!;
       const input = this.input(current);
+      if (input.version !== this.manager.moduleVersion(current.platform)) throw conflict('module_version_changed', MODULE_VERSION_CHANGED);
       const sessionOwner = taskPlatformOwner(this.db, current);
       if (input.account !== this.manager.accountKey(sessionOwner, current.platform)) throw conflict('platform_account_changed', '平台账号已变化，请为当前账号新建任务');
       if (input.connection !== this.manager.connectionId(sessionOwner, current.platform)) {
         input.connection = this.manager.connectionId(sessionOwner, current.platform)!;
         this.saveInput(current, input);
       }
-      if (input.version !== this.manager.moduleVersion(current.platform)) throw conflict('module_version_changed', '平台模块已更新，请核对后重新创建任务');
       const unitIds = JSON.parse(current.units) as string[];
       const platform = await this.manager.describe(current.platform);
       const courses = await this.manager.courses(sessionOwner, current.platform);
@@ -642,9 +725,13 @@ export class JobEngine {
   private loadCheckpoint(row: TaskRow): Checkpoint {
     if (!row.checkpoint) return { completed: [], positions: {} };
     try {
-      return JSON.parse(
+      const checkpoint = JSON.parse(
         this.vault.open(row.owner, `job/${row.id}`, Buffer.from(row.checkpoint)).toString('utf8'),
       ) as Checkpoint;
+      if (!Array.isArray(checkpoint?.completed) || !checkpoint.positions || typeof checkpoint.positions !== 'object' || Array.isArray(checkpoint.positions)) {
+        throw new Error('Invalid checkpoint');
+      }
+      return checkpoint;
     } catch {
       throw conflict('checkpoint_unavailable', '任务检查点无法解密，请保留数据并核对密钥；不会重新执行未知步骤');
     }

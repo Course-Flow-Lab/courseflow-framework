@@ -45,4 +45,9 @@ export function registerTasksRoutes(app: FastifyInstance, context: ServerContext
     const current = requireIdentity(request, { write: true });
     return { task: jobs.resume(current.user.id, request.params.id) };
   });
+
+  app.post<{ Params: { id: string }; Body: { to_version?: string } }>('/api/tasks/:id/migrate', async (request) => {
+    const current = requireIdentity(request, { write: true });
+    return { task: jobs.migrate(current.user.id, request.params.id, request.body?.to_version) };
+  });
 }

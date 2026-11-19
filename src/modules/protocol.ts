@@ -31,6 +31,7 @@ export type Manifest = {
   name: string;
   version: string;
   moduleApi: number;
+  checkpoint_compatible_from?: string[];
   engines: { framework: string };
   runtime: { engine: EngineKind; entry: string; files: string[] };
   platform: PlatformDescriptor;
@@ -180,6 +181,10 @@ export function validateManifest(raw: unknown): Manifest {
   const name = stringField(source, 'name', '');
   const version = stringField(source, 'version', '');
   if (!/^\d+\.\d+\.\d+/.test(version)) throw badRequest('清单 version 应为语义化版本', 'invalid_manifest');
+  const compatible = stringList(source, 'checkpoint_compatible_from', '');
+  if (compatible.some((item) => !/^\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?$/.test(item))) {
+    throw badRequest('清单 checkpoint_compatible_from 必须列出确切的模块版本', 'invalid_manifest');
+  }
   if (source.moduleApi !== MODULE_API) {
     throw badRequest(
       `模块要求 moduleApi ${String(source.moduleApi)}，本服务支持 ${MODULE_API}`,
@@ -250,6 +255,7 @@ export function validateManifest(raw: unknown): Manifest {
     name,
     version,
     moduleApi: MODULE_API,
+    ...(compatible.length ? { checkpoint_compatible_from: [...new Set(compatible)] } : {}),
     engines: { framework: frameworkRange },
     runtime: { engine, entry, files },
     platform: {
