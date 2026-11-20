@@ -18,9 +18,17 @@ type AnswerState = {
   kind?: 'prerequisite_quiz';
   phase: string; index: number; round: number; cursor: number; attempt?: Attempt; paper?: Paper;
   answers: Record<string, string[]>; explanations: Record<string, string>; preserve: string[];
-  confirmed?: boolean; nonce?: string; lock?: string; readbacks?: number; remaining?: number;
+  confirmed?: boolean; nonce?: string; lock?: string; readbacks?: number; submit_retried?: boolean; remaining?: number;
   records: Array<Record<string, unknown>>;
 };
+export const LEGACY_SUBMISSION_UNCONFIRMED = '平台尚未确认本次交卷，请稍后使用“回读提交结果”；不会自动重交';
+
+export function autoChaoxingSubmission(task: TaskRow, input: JobInput, checkpoint: Checkpoint): boolean {
+  if (task.platform !== 'cx') return false;
+  return task.operation === 'answer' && input.options.auto_submit === true ||
+    task.operation === 'study' && input.options.auto_prerequisite_quizzes === true && checkpoint.workflow?.kind === 'prerequisite_quiz';
+}
+
 const scope = (c: WorkflowContext) => ({ id: c.task.id, generation: c.task.generation });
 async function call(c: WorkflowContext, method: string, params: Record<string, unknown>) {
   c.check();
@@ -171,8 +179,26 @@ async function answer(c: WorkflowContext, prerequisite?: Paper) {
   const ids = prerequisite ? [prerequisite.id] : JSON.parse(c.task.units) as string[];
   const state: AnswerState = c.checkpoint.workflow ?? newAnswerState();
   c.checkpoint.workflow = state;
+  const autoRecover = autoChaoxingSubmission(c.task, c.input, c.checkpoint);
+  if (autoRecover) state.readbacks = 0;
   const courseKey = `${c.course.id}/${c.course.recruit_id}`;
   const save = () => { c.check(); c.save(); };
+  const submit = async (lock: string, retry = false): Promise<boolean> => {
+    try {
+      await call(c, 'exam.write', {
+        attempt_id: state.attempt!.id, answers: state.answers, phase: 'submit',
+        ...(retry ? { retry: true, preserve_ids: state.preserve } : {}),
+      });
+    } catch (error) {
+      c.db.run("UPDATE operation_locks SET state='unknown' WHERE id=?1", lock);
+      if (c.signal.aborted) return false;
+      state.phase = 'readback'; save();
+      if (!autoRecover) { c.pause(`交卷结果待核对：${(error as Error).message}。继续时只回读，不重新交卷。`); return false; }
+      c.event('submission_pending', `正在核对原答卷：${(error as Error).message}`);
+    }
+    state.phase = 'readback'; state.readbacks = 0; save();
+    return true;
+  };
   const acceptOpened=async (opened:any):Promise<boolean>=>{
       let batches=0;
       while (!opened.ready && opened.attempt) {
@@ -185,6 +211,7 @@ async function answer(c: WorkflowContext, prerequisite?: Paper) {
       (state as any).started_at = nowSeconds();
       for (const q of state.attempt!.questions) q.images = (q.images ?? []).map((url) => c.manager.registerImage(c.platformOwner, c.task.platform, url));
       state.answers = {}; state.explanations = {}; state.preserve = []; state.cursor = 0; state.confirmed = false; state.phase = 'answers';
+      delete state.submit_retried;
       for (const q of state.attempt!.questions) {
         if (validAnswer(q, q.correct_answer)) c.memory.remember(c.task.owner, c.task.platform, courseKey, q, q.correct_answer);
         if (validAnswer(q, q.answer)) { state.answers[q.id] = q.answer; state.preserve.push(q.id); }
@@ -265,24 +292,43 @@ async function answer(c: WorkflowContext, prerequisite?: Paper) {
           c.db.run('INSERT INTO operation_locks(id,owner,platform,task_id,state,created_at,resource) VALUES(?1,?2,?3,?4,\'pending\',?5,?6)', lock, c.task.owner, c.task.platform, c.task.id, nowSeconds(), resource);
           save();
         });
-        try {
-          await call(c, 'exam.write', { attempt_id: attempt.id, answers: state.answers, phase: 'submit' });
-          state.phase = 'readback'; state.readbacks = 0; save();
-        } catch (error) {
-          c.db.run("UPDATE operation_locks SET state='unknown' WHERE id=?1", lock);
-          state.phase = 'readback';
-          if (!c.signal.aborted) { save(); c.pause(`交卷结果待核对：${(error as Error).message}。继续时只回读，不重新交卷。`); }
-          return;
-        }
+        if (!await submit(lock)) return;
       }
     }
     if (state.phase === 'submitting') { state.phase = 'readback'; save(); }
     if (state.phase === 'readback') {
       c.update(`正在回读交卷结果：${attempt.name}`);
-      const result = await call(c, 'exam.readback', { attempt_id: attempt.id });
+      const canRetry = autoRecover && !state.submit_retried && (attempt.expires_at == null || attempt.expires_at > nowSeconds());
+      let result;
+      try {
+        result = await call(c, 'exam.readback', { attempt_id: attempt.id, ...(canRetry && (state.readbacks ?? 0) >= 5 ? { check_retry: true } : {}) });
+      } catch (error) {
+        const code = (error as { code?: string }).code ?? '';
+        if (!autoRecover || !['platform_unavailable', 'module_timeout'].includes(code)) throw error;
+        c.check();
+        result = {};
+      }
       if (!result.confirmed || result.attempt_id !== attempt.id) {
         state.readbacks = (state.readbacks ?? 0) + 1; save();
-        if (state.readbacks >= 6) { c.pause('平台尚未确认本次交卷，请稍后使用“回读提交结果”；不会自动重交'); return; }
+        if (state.readbacks >= 6) {
+          if (canRetry && result.retryable === true && result.attempt_id === attempt.id && state.lock) {
+            const lock = state.lock;
+            const retrying = c.db.transaction(() => {
+              const updated = c.db.run("UPDATE operation_locks SET state='pending' WHERE id=?1 AND task_id=?2 AND state IN ('pending','unknown')", lock, c.task.id);
+              if (!updated.changes) return false;
+              state.submit_retried = true; state.phase = 'submitting'; save();
+              return true;
+            });
+            if (retrying) {
+              c.update(`正在补交原答卷：${attempt.name}`);
+              c.event('submission_retried', `超星确认原答卷未提交，正在补交：${attempt.name}`);
+              if (!await submit(lock, true)) return;
+              continue;
+            }
+          }
+          c.pause(autoRecover ? '超星尚未确认原答卷的交卷状态。继续任务可再次核对。' : LEGACY_SUBMISSION_UNCONFIRMED);
+          return;
+        }
         await sleep(1500, c.signal); continue;
       }
       if (state.lock) c.db.run("UPDATE operation_locks SET state='confirmed' WHERE id=?1", state.lock);

@@ -9,7 +9,7 @@ import { effectiveTaskPolicy } from '../core/task-policy.ts';
 import { preferences, quietFor } from '../core/preferences.ts';
 import type { AiService } from '../services/ai.ts';
 import { AnswerMemory, validAnswer, ANSWER_SYSTEM, questionPrompt, parseModelAnswer } from '../services/answers.ts';
-import { runPrerequisiteQuiz, runWorkflow, type WorkflowContext } from './workflows.ts';
+import { autoChaoxingSubmission, LEGACY_SUBMISSION_UNCONFIRMED, runPrerequisiteQuiz, runWorkflow, type WorkflowContext } from './workflows.ts';
 import { platformOwner, taskPlatformOwner } from '../core/platform-accounts.ts';
 
 export type TaskRow = {
@@ -256,6 +256,14 @@ export class JobEngine {
     const module = input && this.installedModule(row.platform);
     if (module && module.version !== input.version) throw conflict('module_version_changed', MODULE_VERSION_CHANGED);
   }
+  private canRecoverSubmission(row: TaskRow, input: JobInput, checkpoint: Checkpoint, manifest: Manifest): boolean {
+    const workflow = checkpoint.workflow;
+    return manifest.platform.supports_submission_retry === true && autoChaoxingSubmission(row, input, checkpoint) &&
+      ['submitting', 'readback'].includes(workflow?.phase) && typeof workflow.attempt?.id === 'string' &&
+      typeof workflow.lock === 'string' && Boolean(this.db.get(
+        "SELECT 1 FROM operation_locks WHERE id=?1 AND task_id=?2 AND state IN ('pending','unknown')", workflow.lock, row.id,
+      ));
+  }
   private moduleUpdate(row: TaskRow, input: JobInput, module: TaskModule, checkpoint?: Checkpoint): NonNullable<TaskView['module_update']> {
     const result: NonNullable<TaskView['module_update']> = { from_version: input.version, to_version: module.version };
     const manifest = JSON.parse(module.manifest) as Manifest;
@@ -266,7 +274,8 @@ export class JobEngine {
     else if (!knownZhsUpgrade && !manifest.checkpoint_compatible_from?.includes(input.version)) result.blocked_reason = '当前模块未声明兼容原版本的检查点';
     else if (!checkpoint) result.blocked_reason = '任务检查点无法读取，请核对站点密钥';
     else if (['opening', 'resetting'].includes(checkpoint.workflow?.phase)) result.blocked_reason = '请先在官方页面核对开卷或重做结果';
-    else if (['submitting', 'readback'].includes(checkpoint.workflow?.phase) || this.db.get("SELECT 1 FROM operation_locks WHERE task_id=?1 AND state IN ('pending','unknown')", row.id)) {
+    else if ((['submitting', 'readback'].includes(checkpoint.workflow?.phase) || this.db.get("SELECT 1 FROM operation_locks WHERE task_id=?1 AND state IN ('pending','unknown')", row.id)) &&
+        !this.canRecoverSubmission(row, input, checkpoint, manifest)) {
       result.blocked_reason = '请先回读并确认平台提交结果';
     }
     return result;
@@ -291,6 +300,35 @@ export class JobEngine {
     try { return this.storedInput(row)?.options.auto_prerequisite_quizzes !== true; }
     catch { return false; }
   }
+  private recoverLegacyChaoxingSubmissions(): void {
+    const paused = this.db.all<TaskRow>("SELECT * FROM tasks WHERE platform='cx' AND state='paused' AND detail=?1", LEGACY_SUBMISSION_UNCONFIRMED);
+    if (!paused.length) return;
+    const module = this.installedModule('cx');
+    if (module?.enabled !== 1) return;
+    const manifest = JSON.parse(module.manifest) as Manifest;
+    if (manifest.platform.supports_submission_retry !== true) return;
+    for (const row of paused) {
+      if (this.controllers.has(row.id) || quietFor(this.db, row.owner).active ||
+          this.db.get<{ disabled: number }>('SELECT disabled FROM users WHERE id=?1', row.owner)?.disabled !== 0) continue;
+      try {
+        const input = this.storedInput(row);
+        if (!input?.account) continue;
+        const checkpoint = this.loadCheckpoint(row);
+        if (!this.canRecoverSubmission(row, input, checkpoint, manifest)) continue;
+        const sessionOwner = taskPlatformOwner(this.db, row);
+        if (input.account !== this.manager.accountKey(sessionOwner, row.platform)) continue;
+        if (input.version !== module.version) {
+          if (this.moduleUpdate(row, input, module, checkpoint).blocked_reason) continue;
+          this.migrate(row.owner, row.id, module.version);
+        }
+        this.resume(row.owner, row.id);
+        this.event(row.id, 'submission_recovery', '已排队，自动核对先前待确认的超星答卷');
+      } catch (error) {
+        this.log('warn', `任务 ${row.id} 无法恢复交卷核对：${(error as Error).message}`);
+      }
+    }
+  }
+
   private schedule(): void {
     if (this.stopping) return;
     try {
@@ -309,6 +347,7 @@ export class JobEngine {
           this.event(row.id, 'paused', MODULE_VERSION_CHANGED);
         }
       }
+      this.recoverLegacyChaoxingSubmissions();
       const queued = this.db.all<TaskRow>("SELECT t.* FROM tasks t LEFT JOIN task_order o ON o.task_id=t.id WHERE t.state='queued' ORDER BY coalesce(o.position,t.created_at)");
       for (const row of queued) if (!this.executions.has(row.id)) this.launch(row.id);
     } catch (error) { this.log('warn', `任务调度暂时失败：${(error as Error).message}`); }

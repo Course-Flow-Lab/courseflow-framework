@@ -5,6 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { boot,call,setupAdmin,waitFor } from './support/harness.ts';
+import type { JobInput, TaskRow } from '../src/jobs/engine.ts';
+import { LEGACY_SUBMISSION_UNCONFIRMED } from '../src/jobs/workflows.ts';
 
 const moduleDir=fileURLToPath(new URL('../../courseflow-chaoxing/',import.meta.url));
 const python=process.env.CF_CX_PYTHON??'/usr/bin/python3';
@@ -145,8 +147,13 @@ test('超星勾选待解锁章节后接续学习，只执行所选单元', {skip
   assert.deepEqual(written,completed.units,'只执行平台已解锁且尚未完成的真实单元');
 });
 
-for (const uncertainSubmit of [false, true]) {
-  test(`超星前置测验${uncertainSubmit ? '提交响应丢失后只回读并接续' : '自动作答并在解锁后接续'}`, {skip:!available,timeout:35_000}, async t => {
+const submissionCases = [
+  ['normal', '自动作答并在解锁后接续'],
+  ['lost', '提交响应丢失后自动核对并接续'],
+  ['legacy', '升级后恢复旧任务并补交仍未提交的同一份答卷'],
+] as const;
+for (const [scenario, title] of submissionCases) {
+  test(`超星前置测验${title}`, {skip:!available,timeout:35_000}, async t => {
     const {runtime}=await boot('courseflow-cx-prerequisite-quiz-');
     t.after(()=>runtime.close());
     runtime.manager.install(moduleDir);
@@ -154,6 +161,9 @@ for (const uncertainSubmit of [false, true]) {
     const session=await setupAdmin(runtime);
     const steps: string[] = [];
     let submitted=false;
+    let submitCount=0;
+    let taskId='';
+    const legacy=scenario==='legacy';
     t.mock.method(runtime.ai,'generate',async (_owner:string,prompt:string)=>{
       assert.match(prompt,/1\+1/);
       steps.push('model');
@@ -171,10 +181,18 @@ for (const uncertainSubmit of [false, true]) {
           return new Response([true,submitted,true].map((open,index)=>
             `<div id="cur${index+1}"><a class="clicktitle">章节 ${index+1}</a>${open?'':'<span class="bntHoverTips">需完成之前闯关任务点，该章节才能解锁</span>'}</div>`).join(''));
         case '/gas/clazz': return Response.json({data:[]});
-        case '/api/phone/jobunfinishedList': return Response.json({data:submitted?[]:[{jobid:'work-11'}]});
-        case '/api/phone/jobfinishedList':
-          if(url.searchParams.get('jobid')==='work-11') steps.push('readback');
+        case '/api/phone/jobunfinishedList':
+          return Response.json({data:submitted?[]:[{jobid:'work-11',workAnswerId:'66',status:'已保存'}]});
+        case '/api/phone/jobfinishedList': {
+          if(url.searchParams.get('jobid')==='work-11') {
+            steps.push('readback');
+            if (legacy && steps.filter(step=>step==='readback').length===1) {
+              const row=runtime.db.get<TaskRow>('SELECT * FROM tasks WHERE id=?1', taskId)!;
+              runtime.jobs.pause(row.owner, taskId);
+            }
+          }
           return Response.json({data:submitted?[{jobid:'work-11'}]:[]});
+        }
         case '/mooc-ans/knowledge/cards': {
           if(url.searchParams.get('num')!=='0') return new Response('');
           const point=url.searchParams.get('knowledgeid');
@@ -207,9 +225,12 @@ for (const uncertainSubmit of [false, true]) {
             return Response.json({status:true});
           }
           assert.equal(submitted,false,'前置测验不得重复交卷');
+          assert.equal(form.get('workAnswerId'),'66','补交沿用原答卷');
           steps.push('submit');
-          submitted=true;
-          return Response.json({status:!uncertainSubmit});
+          submitCount++;
+          submitted=!legacy||submitCount===2;
+          if(scenario==='lost') throw new Error('模拟超星已经收下答卷，但交卷响应丢失');
+          return Response.json({status:true});
         }
         default: assert.fail('未声明的模拟网络请求：'+url.pathname);
       }
@@ -221,23 +242,29 @@ for (const uncertainSubmit of [false, true]) {
     const root='/api/platforms/cx/courses/11/22';
     const created=await call(runtime,{method:'POST',url:root+'/study',session,body:{unit_ids:['locked:2','document-3'],auto_prerequisite_quizzes:true}});
     assert.equal(created.status,200,JSON.stringify(created.body));
-    const id=created.body.task.id;
+    const id=taskId=created.body.task.id;
     const taskUrl='/api/tasks/'+id;
-    if(uncertainSubmit){
+    if(legacy){
       await waitFor(runtime,session,id,'paused');
       const paused=(await call(runtime,{url:taskUrl,session})).body;
       assert.equal(paused.workflow.phase,'readback');
       assert.deepEqual(paused.task.completed,['document-1']);
       assert.equal((await call(runtime,{method:'POST',url:taskUrl+'/answers',session,body:{answers:{new:['A']}}})).status,409);
-      assert.equal((await call(runtime,{method:'POST',url:taskUrl+'/readback',session})).status,200);
-      assert.equal((await call(runtime,{method:'POST',url:taskUrl+'/resume',session})).status,200);
+      const { owner } = runtime.db.get<TaskRow>('SELECT * FROM tasks WHERE id=?1', id)!;
+      const scope = `job/${id}/input`;
+      const input=runtime.vault.openJson<JobInput>(owner,scope,Buffer.from(runtime.db.get<{sealed:Uint8Array}>('SELECT sealed FROM task_inputs WHERE task_id=?1',id)!.sealed));
+      runtime.db.run('UPDATE task_inputs SET sealed=?1 WHERE task_id=?2',runtime.vault.sealJson(owner,scope,{...input,version:'0.1.7'}),id);
+      runtime.db.run('UPDATE tasks SET detail=?1 WHERE id=?2',LEGACY_SUBMISSION_UNCONFIRMED,id);
     }
     const finished=await waitFor(runtime,session,id,'completed');
     assert.deepEqual(finished.completed,['document-1','document-2','document-3']);
     const details=(await call(runtime,{url:taskUrl,session})).body;
     assert.equal(details.workflow.records.length,1);
     assert.equal(details.workflow.records[0].paper.id,'work-11');
-    assert.deepEqual(steps,['document-1','open','model','draft','submit','readback','document-2','document-3']);
+    assert.deepEqual(steps.filter(step=>step!=='readback'),['document-1','open','model','draft','submit',...(legacy?['submit']:[]),'document-2','document-3']);
+    assert.equal(submitCount,legacy?2:1);
+    assert.ok(steps.indexOf('readback')>steps.indexOf('submit'));
+    if (legacy) assert.ok(details.events.some((event:{kind:string})=>event.kind==='submission_recovery'));
     assert.equal(runtime.db.get<{state:string}>('SELECT state FROM operation_locks WHERE task_id=?1',id)?.state,'confirmed');
   });
 }
