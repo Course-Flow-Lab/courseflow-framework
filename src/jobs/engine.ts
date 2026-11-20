@@ -313,7 +313,7 @@ export class JobEngine {
       try {
         const input = this.storedInput(row);
         if (!input?.account) continue;
-        if (row.detail === AUTO_SUBMISSION_UNCONFIRMED && input.version === module.version) continue;
+        if (row.detail === AUTO_SUBMISSION_UNCONFIRMED && input.version === module.version && row.operation !== 'study') continue;
         const checkpoint = this.loadCheckpoint(row);
         if (!this.canRecoverSubmission(row, input, checkpoint, manifest)) continue;
         const sessionOwner = taskPlatformOwner(this.db, row);
@@ -649,17 +649,24 @@ export class JobEngine {
         }
         return;
       }
-      if (checkpoint.workflow?.kind === 'prerequisite_quiz') {
-        if (!await runPrerequisiteQuiz(workflowContext(), checkpoint.workflow.paper as Paper)) return;
-      }
+      let submissionUnconfirmed = false;
+      const runQuiz = async (paper: Paper) => {
+        const result = await runPrerequisiteQuiz(workflowContext(), paper);
+        if (result === 'unconfirmed') {
+          submissionUnconfirmed = true;
+          this.event(taskId, 'submission_unconfirmed', '原答卷待确认，刷新超星目录并接续已开放的所选内容');
+        }
+        return result !== 'paused';
+      };
+      if (checkpoint.workflow?.kind === 'prerequisite_quiz' && !await runQuiz(checkpoint.workflow.paper as Paper)) return;
       const deferredStudy = current.platform === 'cx' && current.operation === 'study' && unitIds.some(deferredChapterId);
       const autoQuiz = deferredStudy && input.options.auto_prerequisite_quizzes === true;
-      let units = await this.manager.units(sessionOwner, current.platform, course, deferredStudy);
+      let units = await this.manager.units(sessionOwner, current.platform, course, deferredStudy || submissionUnconfirmed);
       if (controller.signal.aborted || !this.stillRunning(taskId, generation)) return;
       const selected = unitIds
         .map((id) => units.find((unit) => unit.id === id))
         .filter((unit): unit is Unit => unit !== undefined);
-      if (!deferredStudy && selected.length === 0) throw conflict('unit_not_found', '所选单元已不存在');
+      if (!deferredStudy && selected.length === 0 && !submissionUnconfirmed) throw conflict('unit_not_found', '所选单元已不存在');
 
       // A unit the platform already reports as completed is not studied again: asking the
       // gateway to open it is what answers `421` on a finished course.
@@ -669,8 +676,8 @@ export class JobEngine {
         }
       }
       if (checkpoint.completed.length > 0) this.saveCheckpoint(taskId, current.owner, checkpoint);
-      let pending = deferredStudy ? [] : selected.filter((unit) => !checkpoint.completed.includes(unit.id));
-      if (!deferredStudy && pending.length === 0) {
+      let pending = deferredStudy ? [] : selected.filter((unit) => !checkpoint.completed.includes(unit.id) && (!submissionUnconfirmed || unit.selectable));
+      if (!deferredStudy && pending.length === 0 && !submissionUnconfirmed) {
         this.update(taskId, { state: 'completed', progress: 100, detail: '所选单元均已完成，无需继续学习' });
         this.event(taskId, 'completed', '所选单元均已完成');
         return;
@@ -738,7 +745,7 @@ export class JobEngine {
             if (unit?.state === 'completed' && !done.has(id)) {
               done.add(unit.id);
               checkpoint.completed.push(unit.id);
-            } else if (unit?.selectable && !done.has(id) && (unit.chapter_order ?? -1) < boundary) {
+            } else if (unit?.selectable && !done.has(id) && (submissionUnconfirmed || (unit.chapter_order ?? -1) < boundary)) {
               pending.push(unit);
             }
           }
@@ -777,13 +784,13 @@ export class JobEngine {
 
               const unfinishedStudyChapters = new Set(units.filter(unit => unit.state !== 'completed' && !done.has(unit.id))
                 .map(unit => unit.chapter_id));
-              const quiz = Number.isFinite(boundary)
+              const quiz = !submissionUnconfirmed && Number.isFinite(boundary)
                 ? waitingQuizzes.filter(paper => paper.available && paper.chapter_order < boundary && !unfinishedStudyChapters.has(paper.chapter_id))
                   .sort((a, b) => a.chapter_order - b.chapter_order)[0]
                 : undefined;
               if (quiz) {
                 this.event(taskId, 'prerequisite_quiz', `解锁前置测验：${quiz.name}`);
-                if (!await runPrerequisiteQuiz(workflowContext(), quiz)) return;
+                if (!await runQuiz(quiz)) return;
                 refresh = true;
                 refreshAttempts = 0;
                 continue;
@@ -791,7 +798,7 @@ export class JobEngine {
             }
             const remaining = blocked.filter(id => !done.has(id));
             const name = byId.get(remaining[0])?.name;
-            const detail = `还有 ${remaining.length} 项所选内容待解锁或需人工处理${name ? `（${name}）` : ''}，处理后可继续此任务`;
+            const detail = `${submissionUnconfirmed ? '原答卷待确认。' : ''}还有 ${remaining.length} 项所选内容待解锁或需人工处理${name ? `（${name}）` : ''}，处理后可继续此任务`;
             this.update(taskId, { state: 'paused', detail });
             this.event(taskId, 'paused', detail);
             return;
@@ -907,6 +914,10 @@ export class JobEngine {
         }
       }
 
+      if (submissionUnconfirmed) {
+        workflowContext().pause('已处理平台开放的所选内容，原答卷仍待确认。');
+        return;
+      }
       this.update(taskId, { state: 'completed', progress: 100, detail: '任务完成' });
       this.event(taskId, 'completed', '任务完成');
     } catch (error) {
