@@ -54,8 +54,9 @@ test('ZHS widget handles ready callbacks, original image geometry, unsupported t
   };
   const page: any = { Date: { now: () => (time += 4001) }, setTimeout: (fn: any) => fn(),
     document: { createElement: () => ({}), head: { appendChild: (loader: any) => { loads++; loader.onload(); } }, querySelector: (selector: string) => elements[selector] },
-    // Popup mode loads the challenge after popUp(), then emits onReady.
-    initNECaptcha: (options: any, callback: any) => { config = options; callback({ popUp: () => { popups++; options.onReady(); } }); },
+    // The official wrapper hands the popup instance to captchaIns; popUp()
+    // loads the challenge. onSuccessAble receives {data: onVerifyData}.
+    initAbleYidunFallback: (options: any) => { config = options; options.captchaIns({ popUp: () => { popups++; } }); },
   };
   page.window = page;
   const context = vm.createContext(page);
@@ -65,6 +66,6 @@ test('ZHS widget handles ready callbacks, original image geometry, unsupported t
   kind = 'yidun--space'; assert.equal((await vm.runInContext(script, context)).state, 'unsupported');
   kind = 'yidun--jigsaw'; page.__courseflowCaptchaWaitToken = true;
   assert.equal((await vm.runInContext(script, context)).state, 'loading');
-  config.onVerify(null, { validate: 'synthetic-token' });
+  config.onSuccessAble(null, { data: { validate: 'synthetic-token' } });
   assert.equal((await vm.runInContext(script, context)).token, 'synthetic-token'); assert.equal(loads, 1);
 });
