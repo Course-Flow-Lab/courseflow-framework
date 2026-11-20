@@ -1,7 +1,7 @@
 import type { Db } from '../core/db.ts';
 import type { Vault } from '../core/vault.ts';
 import type { ModuleManager, ModuleRow } from '../modules/manager.ts';
-import type { Course, Manifest, Unit, Question } from '../modules/protocol.ts';
+import type { Course, Manifest, Paper, Unit, Question } from '../modules/protocol.ts';
 import { deferredChapterId } from '../modules/protocol.ts';
 import { nowSeconds, randomId, sleep } from '../core/domain.ts';
 import { badRequest, conflict, forbidden, notFound } from '../core/errors.ts';
@@ -9,7 +9,7 @@ import { effectiveTaskPolicy } from '../core/task-policy.ts';
 import { preferences, quietFor } from '../core/preferences.ts';
 import type { AiService } from '../services/ai.ts';
 import { AnswerMemory, validAnswer, ANSWER_SYSTEM, questionPrompt, parseModelAnswer } from '../services/answers.ts';
-import { runWorkflow, type WorkflowContext } from './workflows.ts';
+import { runPrerequisiteQuiz, runWorkflow, type WorkflowContext } from './workflows.ts';
 import { platformOwner, taskPlatformOwner } from '../core/platform-accounts.ts';
 
 export type TaskRow = {
@@ -50,7 +50,11 @@ export type TaskView = {
   module_update?: { from_version: string; to_version: string; blocked_reason?: string };
 };
 
-export type Checkpoint = { completed: string[]; current?: string; seconds?: number; positions: Record<string, unknown>; [key: string]: any };
+export type Checkpoint = {
+  completed: string[]; current?: string; seconds?: number; positions: Record<string, unknown>;
+  prerequisite_quizzes?: { completed: string[]; records: Array<Record<string, unknown>> };
+  [key: string]: any;
+};
 export type JobInput = { options: Record<string, unknown>; account: string; connection: string; version: string };
 
 const MAX_UNITS = 200;
@@ -125,7 +129,9 @@ export class JobEngine {
     const row = this.db.get<TaskRow>('SELECT * FROM tasks WHERE id=?1 AND owner=?2', id, owner);
     if (!row) throw notFound('找不到这个任务');
     const cp = this.loadCheckpoint(row);
-    return { workflow: cp.workflow ?? null, reviewed_seconds: cp.reviewed ?? 0 };
+    const records = cp.prerequisite_quizzes?.records;
+    const workflow = records?.length ? { ...cp.workflow, records: [...records, ...(cp.workflow?.records ?? [])] } : cp.workflow ?? null;
+    return { workflow, reviewed_seconds: cp.reviewed ?? 0 };
   }
 
   answers(owner: string, id: string, body: { answers?: Record<string, string[]>; text?: string; replace_existing?: boolean }): TaskView {
@@ -135,6 +141,9 @@ export class JobEngine {
     const cp = this.loadCheckpoint(row);
     const workflow = cp.workflow;
     if (!workflow) throw badRequest('当前任务没有需要补充的内容');
+    if (workflow.kind === 'prerequisite_quiz' && !['answers', 'waiting_answers', 'waiting_submit'].includes(workflow.phase)) {
+      throw conflict('invalid_state', '当前前置测验不在可补答阶段');
+    }
     if (workflow.kind === 'activity' && workflow.phase === 'waiting_text') {
       if (typeof body.text !== 'string' || body.text.trim().length < 10 || body.text.length > 1500) throw badRequest('发布内容需 10–1500 字');
       cp.positions[workflow.item_id] = { ...(cp.positions[workflow.item_id] as object ?? {}), generated: body.text.trim() };
@@ -189,6 +198,11 @@ export class JobEngine {
     if (!course) throw notFound('找不到原课程');
     const result = await this.manager.invoke(sessionOwner, row.platform, 'exam.readback', { course, attempt_id: workflow.attempt.id });
     if (!result.confirmed || result.attempt_id !== workflow.attempt.id) throw conflict('submission_unknown', '平台仍未确认本次作答，不会重新提交');
+    const latest = this.db.get<TaskRow>('SELECT * FROM tasks WHERE id=?1 AND owner=?2', id, owner);
+    if (!latest || latest.generation !== row.generation || latest.state !== 'paused' ||
+        !Buffer.from(latest.checkpoint ?? []).equals(Buffer.from(row.checkpoint ?? []))) {
+      throw conflict('invalid_state', '任务已变化，请刷新任务详情');
+    }
     for (const q of workflow.attempt.questions) {
       const answer = result.graded_answers?.[q.id];
       if (validAnswer(q, answer)) this.memory?.remember(owner, row.platform, `${course.id}/${course.recruit_id}`, q, answer);
@@ -265,10 +279,17 @@ export class JobEngine {
     const account = this.manager.accountKey(taskPlatformOwner(this.db, row), row.platform);
     for (const other of running) {
       if (this.manager.accountKey(taskPlatformOwner(this.db, other), other.platform) !== account) continue;
-      const parallel = user.parallel_study && effectiveTaskPolicy(this.db, other.owner).parallel_study && row.operation === 'study' && other.operation === 'study';
+      const parallel = user.parallel_study && effectiveTaskPolicy(this.db, other.owner).parallel_study &&
+        this.isParallelStudy(row) && this.isParallelStudy(other);
       if (!parallel || row.course_id === other.course_id && row.recruit_id === other.recruit_id) return false;
     }
     return true;
+  }
+  private isParallelStudy(row: TaskRow): boolean {
+    if (row.operation !== 'study') return false;
+    if (row.platform !== 'cx') return true;
+    try { return this.storedInput(row)?.options.auto_prerequisite_quizzes !== true; }
+    catch { return false; }
   }
   private schedule(): void {
     if (this.stopping) return;
@@ -337,6 +358,18 @@ export class JobEngine {
     const maxUnits = input.platform === 'cx' && input.operation === 'study' ? MAX_CX_STUDY_UNITS : MAX_UNITS;
     if (unitIds.length > maxUnits) throw badRequest(`一次最多选择 ${maxUnits} 个单元`);
     if (!['study', 'trial', 'review', 'answer', 'mastery', 'meeting', 'qa', 'ask'].includes(input.operation)) throw badRequest('框架尚未提供此任务类型', 'unsupported_operation');
+    const autoQuiz = input.options?.auto_prerequisite_quizzes;
+    if (autoQuiz !== undefined && typeof autoQuiz !== 'boolean') throw badRequest('前置测验选项必须是布尔值');
+    if (autoQuiz) {
+      if (input.platform !== 'cx' || input.operation !== 'study' || !unitIds.some(deferredChapterId)) {
+        throw badRequest('自动处理前置测验需要选择超星待解锁章节');
+      }
+      const module = this.installedModule(input.platform);
+      const manifest = module && JSON.parse(module.manifest) as Manifest;
+      if (!manifest?.platform.presentation?.actions?.some(action => action.id === 'auto_prerequisite_quizzes')) {
+        throw badRequest('当前超星模块不支持自动处理前置测验，请更新模块');
+      }
+    }
     const count = this.db.get<{ count: number }>("SELECT count(*) AS count FROM tasks WHERE owner=?1 AND state IN ('queued','running','paused')", owner)?.count ?? 0;
     if (count >= 20) throw badRequest('最多保留 20 项未结束任务，请先停止不需要的任务');
     const sessionOwner = platformOwner(this.db, owner, input.platform, input.account_id);
@@ -552,18 +585,23 @@ export class JobEngine {
         (item) => item.id === current.course_id && item.recruit_id === current.recruit_id,
       );
       if (!course) throw conflict('course_not_found', '课程已不在平台上，任务无法继续');
-      if (!['study', 'trial'].includes(current.operation)) {
+      const checkpoint = this.loadCheckpoint(current);
+      const check = () => {
+        if (controller.signal.aborted || !this.stillRunning(taskId, generation)) throw conflict('task_cancelled', '任务执行已取消');
+        if (quietFor(this.db, current.owner).active) throw conflict('quiet_hours', '夜间暂停');
+      };
+      const workflowContext = (): WorkflowContext => {
         if (!this.ai || !this.memory) throw conflict('unsupported_operation', '模型和活动服务尚未初始化');
-        const checkpoint = this.loadCheckpoint(current);
-        const check = () => { if (controller.signal.aborted || !this.stillRunning(taskId, generation)) throw conflict('task_cancelled', '任务执行已取消'); };
-        const context: WorkflowContext = {
+        return {
           db: this.db, manager: this.manager, ai: this.ai, memory: this.memory, platformOwner: sessionOwner, task: current, input, course, checkpoint, signal: controller.signal,
           check, save: () => { check(); this.saveCheckpoint(taskId, current.owner, checkpoint); },
           update: (detail, progress) => { check(); this.update(taskId, { detail, ...(progress === undefined ? {} : { progress }) }); },
           pause: (detail) => { check(); this.update(taskId, { state: 'paused', detail }); this.event(taskId, 'paused', detail); },
           event: (kind, detail) => { check(); this.event(taskId, kind, detail); },
         };
-        await runWorkflow(context);
+      };
+      if (!['study', 'trial'].includes(current.operation)) {
+        await runWorkflow(workflowContext());
         if (this.stillRunning(taskId, generation)) {
           const latest = this.get(current.owner, taskId);
           this.update(taskId, { state: 'completed', progress: 100, detail: (current.operation === 'review' || current.operation === 'mastery' && checkpoint.workflow?.remaining || checkpoint.skipped?.length) ? latest.detail : '任务完成' });
@@ -571,7 +609,11 @@ export class JobEngine {
         }
         return;
       }
+      if (checkpoint.workflow?.kind === 'prerequisite_quiz') {
+        if (!await runPrerequisiteQuiz(workflowContext(), checkpoint.workflow.paper as Paper)) return;
+      }
       const deferredStudy = current.platform === 'cx' && current.operation === 'study' && unitIds.some(deferredChapterId);
+      const autoQuiz = deferredStudy && input.options.auto_prerequisite_quizzes === true;
       let units = await this.manager.units(sessionOwner, current.platform, course, deferredStudy);
       if (controller.signal.aborted || !this.stillRunning(taskId, generation)) return;
       const selected = unitIds
@@ -579,7 +621,6 @@ export class JobEngine {
         .filter((unit): unit is Unit => unit !== undefined);
       if (!deferredStudy && selected.length === 0) throw conflict('unit_not_found', '所选单元已不存在');
 
-      const checkpoint = this.loadCheckpoint(current);
       // A unit the platform already reports as completed is not studied again: asking the
       // gateway to open it is what answers `421` on a finished course.
       for (const unit of selected) {
@@ -632,9 +673,14 @@ export class JobEngine {
           }
           const expanded = new Set<string>();
           let unlocked = 0;
+          let boundary = Infinity;
           for (const id of scheduled) {
             const chapter = deferredChapterId(id);
-            const children = chapter && !byId.has(id) ? byChapter.get(chapter) : undefined;
+            const unit = byId.get(id);
+            if (autoQuiz && unit?.selectable_after_unlock && !done.has(id)) {
+              boundary = Math.min(boundary, unit.chapter_order ?? Infinity);
+            }
+            const children = chapter && !unit ? byChapter.get(chapter) : undefined;
             if (children?.length) {
               for (const unit of children) expanded.add(unit.id);
               unlocked += 1;
@@ -652,7 +698,7 @@ export class JobEngine {
             if (unit?.state === 'completed' && !done.has(id)) {
               done.add(unit.id);
               checkpoint.completed.push(unit.id);
-            } else if (unit?.selectable && !done.has(id)) {
+            } else if (unit?.selectable && !done.has(id) && (unit.chapter_order ?? -1) < boundary) {
               pending.push(unit);
             }
           }
@@ -661,15 +707,51 @@ export class JobEngine {
           if (!pending.length) {
             const blocked = [...scheduled].filter(id => !done.has(id));
             if (!blocked.length) break;
-            if (refreshAttempts < 2 && blocked.some(deferredChapterId)) {
+            const deferred = blocked.filter(deferredChapterId);
+            if (refreshAttempts < 2 && deferred.length) {
               refreshAttempts += 1;
               await sleep(3000, controller.signal);
               if (!this.stillRunning(taskId, generation)) return;
               refresh = true;
               continue;
             }
-            const name = byId.get(blocked[0])?.name;
-            const detail = `还有 ${blocked.length} 项所选内容待解锁或需人工处理${name ? `（${name}）` : ''}，处理后可继续此任务`;
+            if (autoQuiz && deferred.length) {
+              const result = await this.manager.invoke(sessionOwner, current.platform, 'catalog.papers', { course });
+              check();
+              const quizzes = (result.papers as Paper[]).filter((paper): paper is Paper & { chapter_id: string; chapter_order: number } =>
+                paper.task_point === true && typeof paper.chapter_id === 'string' && typeof paper.chapter_order === 'number');
+              const confirmed = new Set(checkpoint.prerequisite_quizzes?.completed);
+              const waitingQuizzes = quizzes.filter(paper => !paper.done && !confirmed.has(paper.id));
+              // An unlocked chapter may have only quizzes and therefore no ordinary units.
+              const quizChapters = new Set(quizzes.map(paper => paper.chapter_id));
+              const unfinishedQuizChapters = new Set(waitingQuizzes.map(paper => paper.chapter_id));
+              for (const id of deferred) {
+                const chapter = deferredChapterId(id)!;
+                if (!byChapter.has(chapter) && quizChapters.has(chapter) && !unfinishedQuizChapters.has(chapter)) {
+                  done.add(id);
+                  checkpoint.completed.push(id);
+                }
+              }
+              this.saveCheckpoint(taskId, current.owner, checkpoint);
+              if (blocked.every(id => done.has(id))) break;
+
+              const unfinishedStudyChapters = new Set(units.filter(unit => unit.state !== 'completed' && !done.has(unit.id))
+                .map(unit => unit.chapter_id));
+              const quiz = Number.isFinite(boundary)
+                ? waitingQuizzes.filter(paper => paper.available && paper.chapter_order < boundary && !unfinishedStudyChapters.has(paper.chapter_id))
+                  .sort((a, b) => a.chapter_order - b.chapter_order)[0]
+                : undefined;
+              if (quiz) {
+                this.event(taskId, 'prerequisite_quiz', `解锁前置测验：${quiz.name}`);
+                if (!await runPrerequisiteQuiz(workflowContext(), quiz)) return;
+                refresh = true;
+                refreshAttempts = 0;
+                continue;
+              }
+            }
+            const remaining = blocked.filter(id => !done.has(id));
+            const name = byId.get(remaining[0])?.name;
+            const detail = `还有 ${remaining.length} 项所选内容待解锁或需人工处理${name ? `（${name}）` : ''}，处理后可继续此任务`;
             this.update(taskId, { state: 'paused', detail });
             this.event(taskId, 'paused', detail);
             return;

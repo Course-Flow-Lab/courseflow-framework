@@ -15,6 +15,7 @@ export type WorkflowContext = {
   pause: (detail: string) => void; event: (kind: string, detail: string) => void;
 };
 type AnswerState = {
+  kind?: 'prerequisite_quiz';
   phase: string; index: number; round: number; cursor: number; attempt?: Attempt; paper?: Paper;
   answers: Record<string, string[]>; explanations: Record<string, string>; preserve: string[];
   confirmed?: boolean; nonce?: string; lock?: string; readbacks?: number; remaining?: number;
@@ -29,21 +30,47 @@ async function call(c: WorkflowContext, method: string, params: Record<string, u
 }
 
 export async function runWorkflow(c: WorkflowContext): Promise<void> {
-  if (['answer', 'mastery'].includes(c.task.operation)) {
-    let pending = false;
-    const timer = setInterval(() => {
-      const attempt = c.checkpoint.workflow?.attempt;
-      if (!attempt || pending || c.signal.aborted) return;
-      pending = true;
-      void call(c, 'exam.heartbeat', { attempt_id: attempt.id, seconds: Math.max(1, nowSeconds() - (c.checkpoint.workflow.started_at ?? nowSeconds())) })
-        .catch((error) => { if ((error as any).code !== 'unsupported_operation' && !c.signal.aborted) { try { c.pause('考试计时同步失败，请核对官方页面后继续'); } catch {} } })
-        .finally(() => { pending = false; });
-    }, 30_000);
-    timer.unref();
-    try { return await answer(c); } finally { clearInterval(timer); }
-  }
+  if (['answer', 'mastery'].includes(c.task.operation)) return runAnswerWorkflow(c);
   if (c.task.operation === 'review') return review(c);
   return activity(c);
+}
+
+function newAnswerState(): AnswerState {
+  return { phase: 'new', index: 0, round: 0, cursor: 0, answers: {}, explanations: {}, preserve: [], records: [] };
+}
+
+async function runAnswerWorkflow(c: WorkflowContext, prerequisite?: Paper): Promise<void> {
+  let pending = false;
+  const timer = setInterval(() => {
+    const attempt = c.checkpoint.workflow?.attempt;
+    if (!attempt || pending || c.signal.aborted) return;
+    pending = true;
+    void call(c, 'exam.heartbeat', { attempt_id: attempt.id, seconds: Math.max(1, nowSeconds() - (c.checkpoint.workflow.started_at ?? nowSeconds())) })
+      .catch((error) => { if ((error as any).code !== 'unsupported_operation' && !c.signal.aborted) { try { c.pause('考试计时同步失败，请核对官方页面后继续'); } catch {} } })
+      .finally(() => { pending = false; });
+  }, 30_000);
+  timer.unref();
+  try { return await answer(c, prerequisite); } finally { clearInterval(timer); }
+}
+
+export async function runPrerequisiteQuiz(c: WorkflowContext, paper: Paper): Promise<boolean> {
+  const state: AnswerState = c.checkpoint.workflow?.kind === 'prerequisite_quiz'
+    ? c.checkpoint.workflow
+    : { ...newAnswerState(), kind: 'prerequisite_quiz', paper };
+  c.checkpoint.workflow = state;
+  await runAnswerWorkflow({
+    ...c,
+    task: { ...c.task, operation: 'answer' },
+    input: { ...c.input, options: { ...c.input.options, use_ai: true, auto_submit: true, redo: false } },
+  }, paper);
+  if (state.index === 0) return false;
+  c.check();
+  const history = c.checkpoint.prerequisite_quizzes ??= { completed: [], records: [] };
+  history.completed.push(paper.id);
+  history.records.push(...state.records);
+  delete c.checkpoint.workflow;
+  c.save();
+  return true;
 }
 
 async function review(c: WorkflowContext) {
@@ -139,10 +166,10 @@ async function activity(c: WorkflowContext) {
   if (c.checkpoint.skipped?.length) c.update(`见面课处理结束，${c.checkpoint.skipped.length} 项需要人工处理，请查看执行记录`, 100);
 }
 
-async function answer(c: WorkflowContext) {
+async function answer(c: WorkflowContext, prerequisite?: Paper) {
   const mastery = c.task.operation === 'mastery';
-  const ids = JSON.parse(c.task.units) as string[];
-  const state: AnswerState = c.checkpoint.workflow ?? { phase: 'new', index: 0, round: 0, cursor: 0, answers: {}, explanations: {}, preserve: [], records: [] };
+  const ids = prerequisite ? [prerequisite.id] : JSON.parse(c.task.units) as string[];
+  const state: AnswerState = c.checkpoint.workflow ?? newAnswerState();
   c.checkpoint.workflow = state;
   const courseKey = `${c.course.id}/${c.course.recruit_id}`;
   const save = () => { c.check(); c.save(); };
@@ -170,12 +197,13 @@ async function answer(c: WorkflowContext) {
     c.check();
     if (['opening', 'resetting'].includes(state.phase)) { c.pause('开卷或重做请求结果尚未核对，请检查官方作答记录；不会自动重复开卷'); return; }
     if (state.phase === 'new') {
-      c.update(mastery ? '正在读取掌握度练习' : '正在读取作业考试');
-      const result = await call(c, mastery ? 'catalog.mastery' : 'catalog.papers', {});
-      const paper = (result.papers as Paper[]).find((p) => p.id === ids[state.index]);
+      c.update(prerequisite ? `正在处理前置测验：${prerequisite.name}` : mastery ? '正在读取掌握度练习' : '正在读取作业考试');
+      const paper = prerequisite ?? ((await call(c, mastery ? 'catalog.mastery' : 'catalog.papers', {})).papers as Paper[])
+        .find((p) => p.id === ids[state.index]);
       if (!paper) { c.pause('所选试卷已不在平台目录中，请刷新后核对'); return; }
       if (paper.done && !c.input.options.redo || mastery && paper.score != null && paper.score >= 100) {
-        c.checkpoint.completed.push(paper.id); state.index++; save(); continue;
+        if (!prerequisite) c.checkpoint.completed.push(paper.id);
+        state.index++; save(); continue;
       }
       if (!paper.available || paper.ends_at != null && paper.ends_at <= nowSeconds()) { c.pause(paper.reason || '试卷尚未开放、已经截止或需要先在官方页面开考'); return; }
       const resource = digest(JSON.stringify([c.input.account, c.task.platform, courseKey, paper.id]));
@@ -278,8 +306,10 @@ async function answer(c: WorkflowContext) {
       state.phase = 'next'; save();
     }
     if (state.phase === 'next') {
-      c.checkpoint.completed.push(ids[state.index]!); state.index++; state.round = 0; state.phase = 'new'; state.readbacks = 0;
-      c.update(`已确认 ${state.index} / ${ids.length} 份${mastery ? '练习' : '试卷'}`, Math.round(state.index / ids.length * 100)); save();
+      if (!prerequisite) c.checkpoint.completed.push(ids[state.index]!);
+      state.index++; state.round = 0; state.phase = 'new'; state.readbacks = 0;
+      if (!prerequisite) c.update(`已确认 ${state.index} / ${ids.length} 份${mastery ? '练习' : '试卷'}`, Math.round(state.index / ids.length * 100));
+      save();
     }
   }
   if (mastery && state.remaining) c.update(`掌握度处理结束，仍有 ${state.remaining} 个知识点未确认达到 100%`, 100);
