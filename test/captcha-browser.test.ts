@@ -7,6 +7,34 @@ import vm from 'node:vm';
 import { BrowserService } from '../src/services/browser.ts';
 import type { Live } from '../src/core/sessions.ts';
 
+test('captcha browser exposes a popup screenshot and forwards manual pointer input', {
+  skip: !fs.existsSync(process.env.CF_CHROMIUM ?? '/usr/bin/chromium') && '未安装 Chromium', timeout: 20_000,
+}, async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'courseflow-captcha-manual-'));
+  const browser = new BrowserService(dir);
+  t.after(async () => { await browser.shutdown(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const entry: Live = { handle: 'synthetic-session', owner: 'synthetic-owner', platform: 'zhs', kind: 'session',
+    cookies: [], token: '', expires_at: 0, job: { id: 'synthetic-job', generation: 1 } };
+  const opened = await browser.open(entry, ['captcha.synthetic.invalid'], { url: 'https://captcha.synthetic.invalid/stuStudy', purpose: 'captcha' });
+  assert.equal(opened.manual, true);
+  await browser.evaluate(entry, opened.page, `(() => {
+    const popup = document.createElement('div');
+    popup.className = 'yidun--popup';
+    popup.style.cssText = 'position:fixed;left:20px;top:30px;width:320px;height:160px;background:#fff';
+    document.body.appendChild(popup);
+    return true;
+  })()`);
+  assert.equal(browser.hasCaptcha(entry.owner, entry.job!.id), true);
+  const view = await browser.captchaView(entry.owner, entry.job!.id);
+  assert.equal(view.state, 'ready');
+  assert.match(String(view.image), /^iVBOR/);
+  assert.equal(view.x, 20); assert.equal(view.y, 30); assert.equal(view.width, 320); assert.equal(view.height, 160);
+  assert.deepEqual(await browser.captchaMouse(entry.owner, entry.job!.id, { type: 'click', x: 50, y: 60 }), { ok: true });
+  await assert.rejects(browser.captchaMouse('another-owner', entry.job!.id, { type: 'click', x: 50, y: 60 }), (e: any) => e.status === 404);
+  await browser.close(opened.page);
+  assert.equal(browser.hasCaptcha(entry.owner, entry.job!.id), false);
+});
+
 test('captcha browser bootstraps the official origin and returns original image bytes without CORS fetches', {
   skip: !fs.existsSync(process.env.CF_CHROMIUM ?? '/usr/bin/chromium') && '未安装 Chromium', timeout: 20_000,
 }, async t => {

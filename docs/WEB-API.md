@@ -89,6 +89,17 @@ async function close() {
 
 任务所有者调用 `POST /api/tasks/:id/migrate`，管理员可调用 `POST /api/admin/tasks/:id/migrate`。两者请求体均为 `{ "to_version": "0.3.9" }`。服务端重新检查目标版本、原账号、模块兼容性和提交状态。成功返回 `{ task }`，任务保持暂停，原检查点及执行记录保留。之后使用原 `resume` 接口继续。版本在操作前再次变化时返回 409 `module_version_changed`。
 
+## 人工验证码
+
+任务因官方验证码暂停自动处理时，若模块与宿主都支持人工转发，任务响应增加 `manual_captcha: true`，任务详情显示“等待人工完成验证码”。页面只在模块保留验证码期间可用，默认最多 300 秒。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/tasks/:id/captcha` | 返回官方验证码弹窗截图 `{state:"ready",image,mime,x,y,width,height}`；加载中为 `{state:"loading"}`，页面已关闭返回 404 |
+| `POST /api/tasks/:id/captcha` | 转发指针操作，`{type:"click",x,y}` 或 `{type:"drag",from:{x,y},to:{x,y}}`；坐标是页面 CSS 像素，需要 CSRF |
+
+只有任务所有者可读取或操作；管理员页面默认不代用户完成验证码。截图不包含 Cookie、令牌或弹窗之外的页面内容。用户操作后，模块仍必须通过平台 `validateSlideToken` 才恢复学习。
+
 ## 纯文本日志
 
 `/api/logs/export`、`/api/tasks/:id/logs`、`/api/tasks/:id/export` 和 `/api/history/export` 均返回 `text/plain; charset=utf-8`、`.log` 附件与 `Cache-Control: no-store`。管理员可使用 `kind=site_tasks` 导出全站任务日志；成员只能导出自己的任务。任务记录仅接受省略格式或 `format=log/txt`，旧的 `md/docx/json/csv` 参数返回 400。课程记录可通过 `platform`、`course`、`recruit` 过滤，标识须按查询参数编码；所有范围始终受账号权限限制。
