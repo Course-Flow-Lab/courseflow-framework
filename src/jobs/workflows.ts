@@ -39,7 +39,10 @@ async function call(c: WorkflowContext, method: string, params: Record<string, u
 }
 
 export async function runWorkflow(c: WorkflowContext): Promise<void> {
-  if (['answer', 'mastery'].includes(c.task.operation)) return runAnswerWorkflow(c);
+  if (['answer', 'mastery'].includes(c.task.operation)) {
+    await runAnswerWorkflow(c);
+    return;
+  }
   if (c.task.operation === 'review') return review(c);
   return activity(c);
 }
@@ -48,7 +51,7 @@ function newAnswerState(): AnswerState {
   return { phase: 'new', index: 0, round: 0, cursor: 0, answers: {}, explanations: {}, preserve: [], records: [] };
 }
 
-async function runAnswerWorkflow(c: WorkflowContext, prerequisite?: Paper): Promise<void> {
+async function runAnswerWorkflow(c: WorkflowContext, prerequisite?: Paper): Promise<'unconfirmed' | void> {
   let pending = false;
   const timer = setInterval(() => {
     const attempt = c.checkpoint.workflow?.attempt;
@@ -62,24 +65,25 @@ async function runAnswerWorkflow(c: WorkflowContext, prerequisite?: Paper): Prom
   try { return await answer(c, prerequisite); } finally { clearInterval(timer); }
 }
 
-export async function runPrerequisiteQuiz(c: WorkflowContext, paper: Paper): Promise<boolean> {
+export async function runPrerequisiteQuiz(c: WorkflowContext, paper: Paper): Promise<'completed' | 'unconfirmed' | 'paused'> {
   const state: AnswerState = c.checkpoint.workflow?.kind === 'prerequisite_quiz'
     ? c.checkpoint.workflow
     : { ...newAnswerState(), kind: 'prerequisite_quiz', paper };
   c.checkpoint.workflow = state;
-  await runAnswerWorkflow({
+  const result = await runAnswerWorkflow({
     ...c,
     task: { ...c.task, operation: 'answer' },
     input: { ...c.input, options: { ...c.input.options, use_ai: true, auto_submit: true, redo: false } },
   }, paper);
-  if (state.index === 0) return false;
+  if (result === 'unconfirmed') return result;
+  if (state.index === 0) return 'paused';
   c.check();
   const history = c.checkpoint.prerequisite_quizzes ??= { completed: [], records: [] };
   history.completed.push(paper.id);
   history.records.push(...state.records);
   delete c.checkpoint.workflow;
   c.save();
-  return true;
+  return 'completed';
 }
 
 async function review(c: WorkflowContext) {
@@ -327,6 +331,7 @@ async function answer(c: WorkflowContext, prerequisite?: Paper) {
               continue;
             }
           }
+          if (prerequisite && autoRecover) return 'unconfirmed';
           c.pause(autoRecover ? AUTO_SUBMISSION_UNCONFIRMED : LEGACY_SUBMISSION_UNCONFIRMED);
           return;
         }

@@ -151,9 +151,10 @@ const submissionCases = [
   ['normal', '自动作答并在解锁后接续'],
   ['lost', '提交响应丢失后自动核对并接续'],
   ['legacy', '升级后恢复旧任务并补交仍未提交的同一份答卷'],
+  ['unconfirmed', '交卷待确认时继续可学内容并保留原答卷'],
 ] as const;
 for (const [scenario, title] of submissionCases) {
-  test(`超星前置测验${title}`, {skip:!available,timeout:35_000}, async t => {
+  test(`超星前置测验${title}`, {skip:!available,timeout:55_000}, async t => {
     const {runtime}=await boot('courseflow-cx-prerequisite-quiz-');
     t.after(()=>runtime.close());
     runtime.manager.install(moduleDir);
@@ -164,6 +165,10 @@ for (const [scenario, title] of submissionCases) {
     let submitCount=0;
     let taskId='';
     const legacy=scenario==='legacy';
+    const unconfirmed=scenario==='unconfirmed';
+    let chapterTwoUnlocked=false;
+    let platformConfirmed=false;
+    const chapterTwoOpen=()=>unconfirmed?chapterTwoUnlocked:submitted;
     t.mock.method(runtime.ai,'generate',async (_owner:string,prompt:string)=>{
       assert.match(prompt,/1\+1/);
       steps.push('model');
@@ -178,7 +183,7 @@ for (const [scenario, title] of submissionCases) {
         case '/mooc2-ans/visit/courselistdata':
           return new Response('<div class="course"><a href="/a?cpi=33"></a><input class="clazzId" value="22"><input class="courseId" value="11"><span class="course-name">合成课程</span></div>');
         case '/mooc2-ans/mycourse/studentcourse':
-          return new Response([true,submitted,true].map((open,index)=>
+          return new Response([true,chapterTwoOpen(),true].map((open,index)=>
             `<div id="cur${index+1}"><a class="clicktitle">章节 ${index+1}</a>${open?'':'<span class="bntHoverTips">需完成之前闯关任务点，该章节才能解锁</span>'}</div>`).join(''));
         case '/gas/clazz': return Response.json({data:[]});
         case '/api/phone/jobunfinishedList':
@@ -186,17 +191,17 @@ for (const [scenario, title] of submissionCases) {
         case '/api/phone/jobfinishedList': {
           if(url.searchParams.get('jobid')==='work-11') {
             steps.push('readback');
-            if (legacy && steps.filter(step=>step==='readback').length===1) {
+            if ((legacy||unconfirmed) && steps.filter(step=>step==='readback').length===1) {
               const row=runtime.db.get<TaskRow>('SELECT * FROM tasks WHERE id=?1', taskId)!;
               runtime.jobs.pause(row.owner, taskId);
             }
           }
-          return Response.json({data:submitted?[{jobid:'work-11'}]:[]});
+          return Response.json({data:(unconfirmed?platformConfirmed:submitted)?[{jobid:'work-11'}]:[]});
         }
         case '/mooc-ans/knowledge/cards': {
           if(url.searchParams.get('num')!=='0') return new Response('');
           const point=url.searchParams.get('knowledgeid');
-          assert.ok(point!=='2'||submitted,'锁定章节不应读取卡片');
+          assert.ok(point!=='2'||chapterTwoOpen(),'锁定章节不应读取卡片');
           const id='document-'+point;
           const attachments:object[]=[{jobid:id,type:'document',isPassed:steps.includes(id),property:{name:id}}];
           if(point==='1') attachments.push(
@@ -244,27 +249,50 @@ for (const [scenario, title] of submissionCases) {
     assert.equal(created.status,200,JSON.stringify(created.body));
     const id=taskId=created.body.task.id;
     const taskUrl='/api/tasks/'+id;
-    if(legacy){
+    if(legacy||unconfirmed){
       await waitFor(runtime,session,id,'paused');
       const paused=(await call(runtime,{url:taskUrl,session})).body;
       assert.equal(paused.workflow.phase,'readback');
       assert.deepEqual(paused.task.completed,['document-1']);
       assert.equal((await call(runtime,{method:'POST',url:taskUrl+'/answers',session,body:{answers:{new:['A']}}})).status,409);
       const { owner } = runtime.db.get<TaskRow>('SELECT * FROM tasks WHERE id=?1', id)!;
-      const scope = `job/${id}/input`;
-      const input=runtime.vault.openJson<JobInput>(owner,scope,Buffer.from(runtime.db.get<{sealed:Uint8Array}>('SELECT sealed FROM task_inputs WHERE task_id=?1',id)!.sealed));
-      runtime.db.run('UPDATE task_inputs SET sealed=?1 WHERE task_id=?2',runtime.vault.sealJson(owner,scope,{...input,version:'0.1.8'}),id);
+      if (legacy) {
+        const scope = `job/${id}/input`;
+        const input=runtime.vault.openJson<JobInput>(owner,scope,Buffer.from(runtime.db.get<{sealed:Uint8Array}>('SELECT sealed FROM task_inputs WHERE task_id=?1',id)!.sealed));
+        runtime.db.run('UPDATE task_inputs SET sealed=?1 WHERE task_id=?2',runtime.vault.sealJson(owner,scope,{...input,version:'0.1.8'}),id);
+      }
       runtime.db.run('UPDATE tasks SET detail=?1 WHERE id=?2',AUTO_SUBMISSION_UNCONFIRMED,id);
     }
+    if (unconfirmed) {
+      await waitFor(runtime,session,id,'running');
+      const parked=await waitFor(runtime,session,id,'paused',30_000);
+      assert.deepEqual(parked.completed,['document-1','document-3']);
+      assert.match(parked.detail,/原答卷待确认.*1 项/);
+      const before=(await call(runtime,{url:taskUrl,session})).body;
+      assert.equal(before.workflow.phase,'readback');
+      assert.equal(before.workflow.attempt.id,'66');
+      assert.equal(runtime.db.get<{state:string}>('SELECT state FROM operation_locks WHERE task_id=?1',id)?.state,'pending');
+
+      chapterTwoUnlocked=true;
+      assert.equal((await call(runtime,{method:'POST',url:taskUrl+'/resume',session})).status,200);
+      const learned=await waitFor(runtime,session,id,'paused');
+      assert.deepEqual(learned.completed,['document-1','document-3','document-2']);
+      assert.match(learned.detail,/原答卷仍待确认/);
+
+      platformConfirmed=true;
+      assert.equal((await call(runtime,{method:'POST',url:taskUrl+'/readback',session})).status,200);
+      assert.equal((await call(runtime,{method:'POST',url:taskUrl+'/resume',session})).status,200);
+    }
     const finished=await waitFor(runtime,session,id,'completed');
-    assert.deepEqual(finished.completed,['document-1','document-2','document-3']);
+    const documentOrder=unconfirmed?['document-3','document-2']:['document-2','document-3'];
+    assert.deepEqual(finished.completed,['document-1',...documentOrder]);
     const details=(await call(runtime,{url:taskUrl,session})).body;
     assert.equal(details.workflow.records.length,1);
     assert.equal(details.workflow.records[0].paper.id,'work-11');
-    assert.deepEqual(steps.filter(step=>step!=='readback'),['document-1','open','model','draft','submit',...(legacy?['submit']:[]),'document-2','document-3']);
+    assert.deepEqual(steps.filter(step=>step!=='readback'),['document-1','open','model','draft','submit',...(legacy?['submit']:[]),...documentOrder]);
     assert.equal(submitCount,legacy?2:1);
     assert.ok(steps.indexOf('readback')>steps.indexOf('submit'));
-    if (legacy) assert.ok(details.events.some((event:{kind:string})=>event.kind==='submission_recovery'));
+    if (legacy||unconfirmed) assert.ok(details.events.some((event:{kind:string})=>event.kind==='submission_recovery'));
     assert.equal(runtime.db.get<{state:string}>('SELECT state FROM operation_locks WHERE task_id=?1',id)?.state,'confirmed');
   });
 }
