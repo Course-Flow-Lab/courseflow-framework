@@ -22,6 +22,7 @@ type AnswerState = {
   records: Array<Record<string, unknown>>;
 };
 export const LEGACY_SUBMISSION_UNCONFIRMED = '平台尚未确认本次交卷，请稍后使用“回读提交结果”；不会自动重交';
+export const AUTO_SUBMISSION_UNCONFIRMED = '超星尚未确认原答卷的交卷状态。继续任务可再次核对。';
 
 export function autoChaoxingSubmission(task: TaskRow, input: JobInput, checkpoint: Checkpoint): boolean {
   if (task.platform !== 'cx') return false;
@@ -321,12 +322,12 @@ async function answer(c: WorkflowContext, prerequisite?: Paper) {
             });
             if (retrying) {
               c.update(`正在补交原答卷：${attempt.name}`);
-              c.event('submission_retried', `超星确认原答卷未提交，正在补交：${attempt.name}`);
+              c.event('submission_retry_pending', `正在补交原答卷：${attempt.name}`);
               if (!await submit(lock, true)) return;
               continue;
             }
           }
-          c.pause(autoRecover ? '超星尚未确认原答卷的交卷状态。继续任务可再次核对。' : LEGACY_SUBMISSION_UNCONFIRMED);
+          c.pause(autoRecover ? AUTO_SUBMISSION_UNCONFIRMED : LEGACY_SUBMISSION_UNCONFIRMED);
           return;
         }
         await sleep(1500, c.signal); continue;

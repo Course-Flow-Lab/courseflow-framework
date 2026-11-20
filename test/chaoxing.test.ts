@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { boot,call,setupAdmin,waitFor } from './support/harness.ts';
 import type { JobInput, TaskRow } from '../src/jobs/engine.ts';
-import { LEGACY_SUBMISSION_UNCONFIRMED } from '../src/jobs/workflows.ts';
+import { AUTO_SUBMISSION_UNCONFIRMED } from '../src/jobs/workflows.ts';
 
 const moduleDir=fileURLToPath(new URL('../../courseflow-chaoxing/',import.meta.url));
 const python=process.env.CF_CX_PYTHON??'/usr/bin/python3';
@@ -253,8 +253,8 @@ for (const [scenario, title] of submissionCases) {
       const { owner } = runtime.db.get<TaskRow>('SELECT * FROM tasks WHERE id=?1', id)!;
       const scope = `job/${id}/input`;
       const input=runtime.vault.openJson<JobInput>(owner,scope,Buffer.from(runtime.db.get<{sealed:Uint8Array}>('SELECT sealed FROM task_inputs WHERE task_id=?1',id)!.sealed));
-      runtime.db.run('UPDATE task_inputs SET sealed=?1 WHERE task_id=?2',runtime.vault.sealJson(owner,scope,{...input,version:'0.1.7'}),id);
-      runtime.db.run('UPDATE tasks SET detail=?1 WHERE id=?2',LEGACY_SUBMISSION_UNCONFIRMED,id);
+      runtime.db.run('UPDATE task_inputs SET sealed=?1 WHERE task_id=?2',runtime.vault.sealJson(owner,scope,{...input,version:'0.1.8'}),id);
+      runtime.db.run('UPDATE tasks SET detail=?1 WHERE id=?2',AUTO_SUBMISSION_UNCONFIRMED,id);
     }
     const finished=await waitFor(runtime,session,id,'completed');
     assert.deepEqual(finished.completed,['document-1','document-2','document-3']);

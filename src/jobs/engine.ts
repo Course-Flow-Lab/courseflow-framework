@@ -9,7 +9,7 @@ import { effectiveTaskPolicy } from '../core/task-policy.ts';
 import { preferences, quietFor } from '../core/preferences.ts';
 import type { AiService } from '../services/ai.ts';
 import { AnswerMemory, validAnswer, ANSWER_SYSTEM, questionPrompt, parseModelAnswer } from '../services/answers.ts';
-import { autoChaoxingSubmission, LEGACY_SUBMISSION_UNCONFIRMED, runPrerequisiteQuiz, runWorkflow, type WorkflowContext } from './workflows.ts';
+import { AUTO_SUBMISSION_UNCONFIRMED, autoChaoxingSubmission, LEGACY_SUBMISSION_UNCONFIRMED, runPrerequisiteQuiz, runWorkflow, type WorkflowContext } from './workflows.ts';
 import { platformOwner, taskPlatformOwner } from '../core/platform-accounts.ts';
 
 export type TaskRow = {
@@ -300,8 +300,8 @@ export class JobEngine {
     try { return this.storedInput(row)?.options.auto_prerequisite_quizzes !== true; }
     catch { return false; }
   }
-  private recoverLegacyChaoxingSubmissions(): void {
-    const paused = this.db.all<TaskRow>("SELECT * FROM tasks WHERE platform='cx' AND state='paused' AND detail=?1", LEGACY_SUBMISSION_UNCONFIRMED);
+  private recoverChaoxingSubmissions(): void {
+    const paused = this.db.all<TaskRow>("SELECT * FROM tasks WHERE platform='cx' AND state='paused' AND detail IN (?1,?2)", LEGACY_SUBMISSION_UNCONFIRMED, AUTO_SUBMISSION_UNCONFIRMED);
     if (!paused.length) return;
     const module = this.installedModule('cx');
     if (module?.enabled !== 1) return;
@@ -313,6 +313,7 @@ export class JobEngine {
       try {
         const input = this.storedInput(row);
         if (!input?.account) continue;
+        if (row.detail === AUTO_SUBMISSION_UNCONFIRMED && input.version === module.version) continue;
         const checkpoint = this.loadCheckpoint(row);
         if (!this.canRecoverSubmission(row, input, checkpoint, manifest)) continue;
         const sessionOwner = taskPlatformOwner(this.db, row);
@@ -347,7 +348,7 @@ export class JobEngine {
           this.event(row.id, 'paused', MODULE_VERSION_CHANGED);
         }
       }
-      this.recoverLegacyChaoxingSubmissions();
+      this.recoverChaoxingSubmissions();
       const queued = this.db.all<TaskRow>("SELECT t.* FROM tasks t LEFT JOIN task_order o ON o.task_id=t.id WHERE t.state='queued' ORDER BY coalesce(o.position,t.created_at)");
       for (const row of queued) if (!this.executions.has(row.id)) this.launch(row.id);
     } catch (error) { this.log('warn', `任务调度暂时失败：${(error as Error).message}`); }
