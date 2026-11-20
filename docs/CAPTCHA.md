@@ -1,8 +1,8 @@
 # 本地验证码识别
 
-Framework 0.1.13 提供可选的共享识别服务，平台模块声明 `permissions.captcha: true` 后调用。后端只接收图片，平台 Cookie、密码和验证令牌由原会话与官方组件处理。未设置 `CF_CAPTCHA_URL` 时保持人工验证。
+Framework 0.1.18 提供可选的共享识别服务，并新增 WebUI 人工验证码转发，平台模块声明 `permissions.captcha: true` 后调用。后端只接收图片，平台 Cookie、密码和验证令牌由原会话与官方组件处理。未设置 `CF_CAPTCHA_URL` 时保持人工验证。
 
-配套 ZHS 0.3.8 已接入共享课视频学习、短时试跑和每日复习中的拼图验证。人脸、短信、图形点选、登录及作业考试的额外验证仍由用户处理。识别坐标不代表验证通过，必须由智慧树 `validateSlideToken` 确认后才恢复。
+配套 ZHS 0.3.16 已接入共享课视频学习、短时试跑和每日复习中的拼图验证。人脸、短信、图形点选、登录及作业考试的额外验证仍由用户处理。识别坐标不代表验证通过，必须由智慧树 `validateSlideToken` 确认后才恢复。
 
 ## 启动后端
 
@@ -53,12 +53,23 @@ services:
 | `cw.captcha.status` | `{session}` | `{available:boolean}`，表示宿主是否配置后端 |
 | `cw.captcha.ocr` | `{session,image}` | `{text}` |
 | `cw.captcha.slide_match` | `{session,target_image,background_image,simple_target?}` | `{target:[x1,y1,x2,y2],target_x,target_y}` |
-| `cw.browser.open` | `{session,url,purpose:"captcha",stage:"open_study"}` | `{page}`，在官方源下建立只加载验证码组件的空文档 |
+| `cw.browser.open` | `{session,url,purpose:"captcha",stage:"open_study"}` | `{page,manual?}`；`manual:true` 表示宿主支持把页面交给 WebUI 人工操作。在官方源下建立只加载验证码组件的空文档 |
 | `cw.browser.image` | `{session,page,url}` | `{image,mime}`，返回该验证码页面已经加载的原图 |
 
 图片为标准 Base64，每张最多 2 MiB、最长边 4096 像素。`target_x/target_y` 是透明滑块裁剪时的偏移；模块需同时处理原图与 CSS 显示尺寸的比例以及滑块初始位置。浏览器原图接口与验证码空文档同时要求 `browser:true` 和 `captcha:true`，页面按用户、平台、连接和任务代次隔离。
 
-ZHS 将打开组件、匹配拖动和平台确认分成短调用，总计最多等待 60 秒。同一明确拒绝最多自动验证一次；失败、未知结果或不支持的挑战会关闭页面、保留学习检查点并暂停。验证及暂停时间不计入学习时长，确认后重新等待保存窗口。令牌和图片不进入检查点、运行日志或源码仓库。
+ZHS 将打开组件、匹配拖动和平台确认分成短调用，总计最多等待 60 秒。同一明确拒绝最多自动验证一次；自动失败、未知结果或不支持的挑战在宿主返回 `manual:true` 时进入人工验证，保留页面最多 300 秒并暂停计时，WebUI 可显示官方弹窗截图并转发拖动/点击。超时或宿主不支持时关闭页面、保留学习检查点并暂停。验证及暂停时间不计入学习时长，确认后重新等待保存窗口。令牌和图片不进入检查点、运行日志或源码仓库。
+
+## 网页人工验证
+
+宿主把验证码页面按任务编号暴露给 Web UI，仅任务所有者可访问：
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET /api/tasks/:id/captcha` | 返回 `{state:"ready",image,mime,x,y,width,height}`；`image` 是官方弹窗 PNG，`x/y` 是页面 CSS 坐标。加载中返回 `{state:"loading"}`，页面已关闭返回 404 |
+| `POST /api/tasks/:id/captcha` | 转发指针操作：`{type:"click",x,y}` 或 `{type:"drag",from:{x,y},to:{x,y}}`。坐标使用页面 CSS 像素，写入请求需要 CSRF |
+
+任务响应增加 `manual_captcha:boolean`。前端只在模块进入“等待人工完成验证码”且页面仍打开时显示入口；用户完成拖动/点击后，模块读取官方组件的 `validate` 令牌并继续平台确认。截图只包含官方验证码弹窗，不包含平台 Cookie、其他页面或令牌。
 
 ## 验证
 

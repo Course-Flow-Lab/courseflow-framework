@@ -21,6 +21,7 @@ export type PlatformDescriptor = {
   unit_kinds: string[];
   max_speed?: number;
   keepalive_seconds?: number;
+  supports_submission_retry?: boolean;
   score_sections?: PresentationTab[];
   presentation?: { tabs?: PresentationTab[]; actions?: PresentationTab[] };
 };
@@ -69,6 +70,7 @@ export type Unit = {
   name: string;
   chapter_id: string;
   chapter_name: string;
+  chapter_order?: number;
   lesson_id: string;
   kind: string;
   duration_seconds?: number | null;
@@ -76,11 +78,20 @@ export type Unit = {
   state: 'not_started' | 'in_progress' | 'completed' | 'unknown';
   video_id?: string | null;
   selectable: boolean;
+  selectable_after_unlock?: boolean;
   selectable_note?: string;
 };
 
+export function deferredChapterId(id: string): string | undefined {
+  return /^locked:(\d+)$/.exec(id)?.[1];
+}
+
 export type Question = { id: string; text: string; kind: string; options: Array<{ id: string; text: string }>; answer: string[]; correct_answer?: string[]; explanation?: string; images?: string[]; blanks: number };
-export type Paper = { id: string; name: string; category: string; available: boolean; done: boolean; can_redo?: boolean; can_review?: boolean; reason?: string; score?: number | null; attempts_left?: number | null; ends_at?: number | null };
+export type Paper = {
+  id: string; name: string; category: string; available: boolean; done: boolean;
+  chapter_id?: string; chapter_order?: number; task_point?: boolean;
+  can_redo?: boolean; can_review?: boolean; reason?: string; score?: number | null; attempts_left?: number | null; ends_at?: number | null;
+};
 export type Attempt = { id: string; paper_id: string; name: string; questions: Question[]; expires_at: number | null };
 
 export type RpcRequest = { jsonrpc: '2.0'; id: number; method: string; params?: unknown };
@@ -270,6 +281,7 @@ export function validateManifest(raw: unknown): Manifest {
       unit_kinds: unitKinds,
       max_speed: typeof platformRaw.max_speed === 'number' ? platformRaw.max_speed : undefined,
       keepalive_seconds: typeof platformRaw.keepalive_seconds === 'number' && Number.isInteger(platformRaw.keepalive_seconds) && platformRaw.keepalive_seconds >= 60 ? platformRaw.keepalive_seconds : undefined,
+      ...(platformRaw.supports_submission_retry === true ? { supports_submission_retry: true } : {}),
       score_sections: readScoreSections(platformRaw.score_sections),
       presentation,
     },

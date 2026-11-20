@@ -38,7 +38,7 @@ export function registerFeaturesRoutes(app: FastifyInstance, c: ServerContext): 
     if (ids !== undefined && (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string'))) throw badRequest('任务选择必须是编号数组');
     if (['study', 'trial', 'review'].includes(operation)) {
       const units = await c.manager.units(platformOwner(request, who.user.id, params.pid), params.pid, found);
-      const allowed = units.filter((u) => operation === 'review' ? u.kind === 'video' && u.state === 'completed' : operation === 'trial' ? u.kind === 'video' && u.selectable && u.state !== 'completed' : u.selectable || u.state === 'completed');
+      const allowed = units.filter((u) => operation === 'review' ? u.kind === 'video' && u.state === 'completed' : operation === 'trial' ? u.kind === 'video' && u.selectable && u.state !== 'completed' : u.selectable || u.state === 'completed' || params.pid === 'cx' && u.selectable_after_unlock);
       ids ??= allowed.filter((u) => operation === 'review' || u.state !== 'completed').map((u) => u.id);
       if (ids.some((id) => !allowed.some((u) => u.id === id))) throw badRequest('所选单元不存在或当前不可学习');
       if (operation === 'trial' && ids.length !== 1) throw badRequest('短时试跑每次选择一个视频');

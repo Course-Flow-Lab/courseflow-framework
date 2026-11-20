@@ -99,6 +99,15 @@ export class BrowserService {
     page.touched = Date.now();
     return page;
   }
+  private captchaPage(owner: string, jobId: string): Page | undefined {
+    for (const page of this.pages.values()) {
+      if (page.captcha && page.owner === owner && page.jobId === jobId) return page;
+    }
+    return undefined;
+  }
+  hasCaptcha(owner: string, jobId: string): boolean {
+    return this.captchaPage(owner, jobId) !== undefined;
+  }
   async open(entry: Live, allow: string[], input: Record<string, unknown>, check: () => void = () => {}) {
     if (!this.available()) throw conflict('browser_unavailable', '未找到 Chromium，请设置 CF_CHROMIUM 后重启服务');
     const url = typeof input.url === 'string' ? input.url : '';
@@ -150,7 +159,7 @@ export class BrowserService {
       check();
       await cdp.call('Page.navigate', { url }, sessionId);
       check();
-      return { page: page.id };
+      return { page: page.id, ...(page.captcha ? { manual: true } : {}) };
     } catch (error) {
       for (const [id, page] of this.pages) if (page.child === child) this.pages.delete(id);
       cdp?.close(); child.kill('SIGTERM');
@@ -184,6 +193,43 @@ export class BrowserService {
       page.observed[pending.path] = { loaded: !error, ...(error ? { code: ['401', '403'].includes(code) || [401, 403].includes(pending.status) ? 'platform_login_expired' : 'platform_verification_required', error: ['401', '403'].includes(code) || [401, 403].includes(pending.status) ? '平台登录已过期' : '平台观看记录读取或保存失败，请核对验证提示' } : {}) };
     }
   }
+  /**
+   * A manual-captcha view: only the official popup, in page CSS pixels. The web UI
+   * displays this image and sends pointer positions back through captchaMouse.
+   */
+  async captchaView(owner: string, jobId: string): Promise<Record<string, unknown>> {
+    const page = this.captchaPage(owner, jobId);
+    if (!page) return { state: 'unavailable' };
+    let rect: any;
+    try {
+      const value = await page.cdp.call('Runtime.evaluate', {
+        expression: `(() => { const el = document.querySelector('.yidun--popup'); if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`,
+        returnByValue: true,
+      }, page.sessionId);
+      rect = value.result?.value;
+    } catch {
+      return { state: 'unavailable' };
+    }
+    if (!rect || !(Number(rect.width) > 0) || !(Number(rect.height) > 0)) return { state: 'loading' };
+    try {
+      const screenshot = await page.cdp.call('Page.captureScreenshot', {
+        format: 'png',
+        clip: { x: Number(rect.x), y: Number(rect.y), width: Number(rect.width), height: Number(rect.height), scale: 1 },
+      }, page.sessionId);
+      return {
+        state: 'ready', image: screenshot.data, mime: 'image/png',
+        x: Number(rect.x), y: Number(rect.y), width: Number(rect.width), height: Number(rect.height),
+      };
+    } catch {
+      return { state: 'unavailable' };
+    }
+  }
+  /** Pointer input for a manual captcha, after the task owner has been checked by the HTTP layer. */
+  async captchaMouse(owner: string, jobId: string, action: Record<string, unknown>): Promise<unknown> {
+    const page = this.captchaPage(owner, jobId);
+    if (!page) throw notFound('当前没有等待人工处理的验证码');
+    return this.mousePage(page, action);
+  }
   /** Original page-loaded bytes retain PNG alpha; fetching the image again could change it. */
   async image(entry: Live, id: string, url: string): Promise<{ image: string; mime: string }> {
     const page = this.require(id, entry);
@@ -196,7 +242,9 @@ export class BrowserService {
   }
   /** Real pointer input for React Flow / drag-only widgets. */
   async mouse(entry: Live, id: string, action: Record<string, unknown>): Promise<unknown> {
-    const page = this.require(id, entry);
+    return this.mousePage(this.require(id, entry), action);
+  }
+  private async mousePage(page: Page, action: Record<string, unknown>): Promise<unknown> {
     const coordinate = (value: unknown, name: string): number => {
       const number = Number(value);
       if (!Number.isFinite(number) || Math.abs(number) > 20_000) throw badRequest(`鼠标坐标 ${name} 无效`);

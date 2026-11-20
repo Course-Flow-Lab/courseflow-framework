@@ -494,11 +494,12 @@ export class ModuleManager {
     return result.courses;
   }
 
-  async units(owner: string, platform: string, course: Course): Promise<Unit[]> {
+  async units(owner: string, platform: string, course: Course, refresh = false): Promise<Unit[]> {
     const handle = this.requireSession(owner, platform);
     const result = (await this.catalog(platform, 'catalog.units', {
       session: handle,
       course,
+      ...(refresh ? { refresh } : {}),
     }, 'units')) as { units?: Unit[] };
     if (!Array.isArray(result?.units)) {
       throw new AppError(502, 'module_protocol_error', '模块没有返回目录');
@@ -597,10 +598,19 @@ export class ModuleManager {
   }
 
   private catalog(platform: string, method: string, params: Record<string, unknown>, field: string): Promise<Record<string, unknown>> {
-    const key = JSON.stringify([platform, method, params]);
+    const { refresh, ...cacheParams } = params;
+    if (method === 'catalog.units') {
+      const { id, recruit_id } = params.course as Course;
+      cacheParams.course = { id, recruit_id };
+    }
+    const key = JSON.stringify([platform, method, cacheParams]);
     const pending = this.catalogCalls.get(key);
-    if (pending) return pending.then(result => structuredClone(result));
-    const work = this.readCatalog(platform, method, params, field).finally(() => { this.catalogCalls.delete(key); });
+    if (pending && !refresh) return pending.then(result => structuredClone(result));
+    // A fresh read must wait for any previous scan of the same course to release its cursor.
+    const read = () => this.readCatalog(platform, method, params, field);
+    const work = (pending ? pending.then(read, read) : read()).finally(() => {
+      if (this.catalogCalls.get(key) === work) this.catalogCalls.delete(key);
+    });
     this.catalogCalls.set(key, work);
     return work.then(result => structuredClone(result));
   }

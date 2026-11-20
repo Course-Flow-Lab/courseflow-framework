@@ -54,6 +54,10 @@ async function close() {
 
 课程列表未提供进度时，宿主只复用显式读取目录后缓存的进度，不在获取课程列表时扫描全部课程。目录接口在首次响应的 `course` 中即附加 `unit_progress: {completed,total,unknown}`；全部单元状态已知且非空时，以已完成单元数除以总单元数提供 `progress` 和 `progress_source: "units"`。此值是目录完成度，不代表平台成绩或视频观看时长；平台已提供的百分比（含 0）保持优先。存在未知状态时保留完成数量，不推断完整百分比。结果按用户、平台会话和课程缓存一分钟，供后续课程列表复用；前端将已读取的课程对象同步回同一平台、课程及班级的卡片。相同会话、方法与课程的并发目录请求共用一次分页扫描；失败后可重新查询。
 
+当 `capabilities.deferred_study` 为 `true`，超星目录中标为 `selectable_after_unlock: true` 的章节可与普通单元一起放入 `POST /api/platforms/cx/courses/:id/:rid/study` 的 `unit_ids`。客户端和任务执行器按目录的 `chapter_order` 补选前序未完成的可学单元。平台解锁已选章节后，任务会用实际学习单元替换 `task.units` 中的章节占位。所选内容仍需解锁或人工处理时，处理后可继续原任务。
+
+框架的 `capabilities.auto_prerequisite_quizzes` 和超星模块的同名课程操作均可用时，学习请求可传 `auto_prerequisite_quizzes: true`（`/jobs` 中放在 `options`）。此选项只对选中待解锁章节的超星学习任务生效。框架按目录顺序处理已学完章节中的前置任务点测验，并刷新解锁状态。交卷结果待确认时，框架继续平台已开放的所选内容，原答卷留在同一任务详情供回读。支持补交的超星模块会核对原答卷状态，确认仍为草稿时自动补交一次。
+
 
 ## 站点管理
 
@@ -84,6 +88,17 @@ async function close() {
 暂停任务保存的模块版本与已安装版本不同时，任务响应附带 `module_update: { from_version, to_version, blocked_reason? }`。`blocked_reason` 表示需要先处理的情况，例如检查点不兼容或交卷结果待核对。
 
 任务所有者调用 `POST /api/tasks/:id/migrate`，管理员可调用 `POST /api/admin/tasks/:id/migrate`。两者请求体均为 `{ "to_version": "0.3.9" }`。服务端重新检查目标版本、原账号、模块兼容性和提交状态。成功返回 `{ task }`，任务保持暂停，原检查点及执行记录保留。之后使用原 `resume` 接口继续。版本在操作前再次变化时返回 409 `module_version_changed`。
+
+## 人工验证码
+
+任务因官方验证码暂停自动处理时，若模块与宿主都支持人工转发，任务响应增加 `manual_captcha: true`，任务详情显示“等待人工完成验证码”。页面只在模块保留验证码期间可用，默认最多 300 秒。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/tasks/:id/captcha` | 返回官方验证码弹窗截图 `{state:"ready",image,mime,x,y,width,height}`；加载中为 `{state:"loading"}`，页面已关闭返回 404 |
+| `POST /api/tasks/:id/captcha` | 转发指针操作，`{type:"click",x,y}` 或 `{type:"drag",from:{x,y},to:{x,y}}`；坐标是页面 CSS 像素，需要 CSRF |
+
+只有任务所有者可读取或操作；管理员页面默认不代用户完成验证码。截图不包含 Cookie、令牌或弹窗之外的页面内容。用户操作后，模块仍必须通过平台 `validateSlideToken` 才恢复学习。
 
 ## 纯文本日志
 
