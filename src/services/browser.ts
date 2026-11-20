@@ -77,6 +77,27 @@ class Cdp {
 
 type Page = { id: string; owner: string; platform: string; connectionId?: string; jobId?: string; generation?: number; child: ChildProcess; cdp: Cdp; sessionId: string; profile: string; allow: string[]; touched: number; observed: Record<string, unknown>; pendingObserved: Map<string, { path: string; status: number }>; captcha: boolean; images: Map<string, { requestId: string; mime: string; ready: boolean }> };
 
+const TEST_CAPTCHA_SCRIPT = `(async () => {
+  if (window.__courseflowTestCaptcha) return;
+  window.__courseflowTestCaptcha = true;
+  const state = window.__courseflowTestCaptchaState = { instance: null, verified: false, error: null };
+  const loader = document.createElement('script');
+  loader.src = 'https://www.zhihuishu.com/assets/ableCaptcha/ableCaptchaCommon.js';
+  loader.onerror = () => { state.error = '加载官方验证码组件失败'; };
+  loader.onload = () => {
+    const popup = () => { if (state.instance) state.instance.popUp(); };
+    window.initAbleYidunFallback({
+      eleCapId: '#courseflow-captcha', width: '320px', showPop: true, enableClose: 1,
+      capType: 'ImageFocusCombine',
+      onSuccessAble: () => { state.verified = true; },
+      onErrorAble: () => {}, onCloseAble: () => {},
+      captchaIns: (instance) => { state.instance = instance; popup(); },
+    });
+  };
+  document.head.appendChild(loader);
+})()`;
+
+
 /** 每个页面使用独立的无痕浏览器上下文，任务结束或暂停时立即关闭。 */
 export class BrowserService {
   private pages = new Map<string, Page>();
@@ -107,6 +128,24 @@ export class BrowserService {
   }
   hasCaptcha(owner: string, jobId: string): boolean {
     return this.captchaPage(owner, jobId) !== undefined;
+  }
+  /** Admin-only lab page: the official widget without a task or platform account. */
+  async openTestCaptcha(owner: string): Promise<{ page: string; manual: boolean }> {
+    const existing = this.captchaPage(owner, 'captcha-test');
+    if (existing) await this.close(existing.id);
+    const entry: Live = {
+      handle: 'captcha-test', owner, platform: 'zhs', kind: 'session',
+      cookies: [], token: '', expires_at: 0, job: { id: 'captcha-test', generation: 1 },
+    };
+    const opened = await this.open(entry, ['studyvideoh5.zhihuishu.com'], {
+      url: 'https://studyvideoh5.zhihuishu.com/stuStudy', purpose: 'captcha',
+    }) as { page: string; manual: boolean };
+    await this.evaluate(entry, opened.page, TEST_CAPTCHA_SCRIPT);
+    return opened;
+  }
+  async closeTestCaptcha(owner: string): Promise<void> {
+    const page = this.captchaPage(owner, 'captcha-test');
+    if (page) await this.close(page.id);
   }
   async open(entry: Live, allow: string[], input: Record<string, unknown>, check: () => void = () => {}) {
     if (!this.available()) throw conflict('browser_unavailable', '未找到 Chromium，请设置 CF_CHROMIUM 后重启服务');

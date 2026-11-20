@@ -71,6 +71,19 @@ ZHS 将打开组件、匹配拖动和平台确认分成短调用，总计最多�
 
 任务响应增加 `manual_captcha:boolean`。前端只在模块进入“等待人工完成验证码”且页面仍打开时显示入口；用户完成拖动/点击后，模块读取官方组件的 `validate` 令牌并继续平台确认。截图只包含官方验证码弹窗，不包含平台 Cookie、其他页面或令牌。
 
+## 管理员验证码拖动测试
+
+管理员页面提供“验证码拖动测试”入口，用于在没有平台账号和任务的情况下验证 WebUI 的截图、坐标映射和指针转发：
+
+| 接口 | 说明 |
+| --- | --- |
+| `POST /api/admin/captcha-test` | 打开一个无账号的官方易盾页面，使用 `ImageFocusCombine` 拼图组件 |
+| `GET /api/admin/captcha-test` | 返回官方弹窗截图和页面 CSS 坐标 |
+| `POST /api/admin/captcha-test/input` | 转发 `{type:"click",x,y}` 或 `{type:"drag",from:{x,y},to:{x,y}}` |
+| `DELETE /api/admin/captcha-test` | 关闭测试页面 |
+
+测试页不提交任务、不写平台进度；只用于验证拖动/点击链路。关闭 WebUI 测试弹窗会自动删除远端测试页面。
+
 ## 验证
 
 ```sh

@@ -80,6 +80,8 @@ async function close() {
 | `DELETE /api/admin/tasks/:id` | 删除任务及其本站输入、队列与事件；执行中的任务先停止，仍在退出的执行器与未核对交卷结果拒绝删除 |
 | `POST /api/admin/tasks/:id/:action` | `pause`、`resume`、`stop`、`move` 或 `migrate`。排序提供 `direction`，迁移提供 `to_version` |
 | `GET /api/admin/tasks/:id/logs` | 下载该任务的纯文本日志 |
+| `POST/GET/DELETE /api/admin/captcha-test` | 启动、读取或关闭无账号的官方验证码拖动测试页面 |
+| `POST /api/admin/captcha-test/input` | 向测试页面转发 `click` 或 `drag` 指针操作 |
 
 管理任务操作记录操作者；删除记录保留在审计日志，独立写入凭证和交卷锁不随任务清除。删除只作用于本站，不删除平台进度或作答。排序在分页前完成，同值按创建时间和任务标识稳定排列，队列上移下移仍只控制所属用户的执行顺序。管理员上限和并行许可存于现有 `site_settings`，无需数据库结构或模块协议迁移。默认值保留原有 1–8 项个人并发设置；调度器对停用账号拒绝创建和继续任务。
 

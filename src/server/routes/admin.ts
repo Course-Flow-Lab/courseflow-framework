@@ -18,7 +18,7 @@ const taskSorts: Record<string, string> = {
 };
 
 export function registerAdminRoutes(app: FastifyInstance, c: ServerContext): void {
-  const { db, jobs, access, logs } = c;
+  const { db, jobs, access, logs, browser } = c;
   function user(id: string): Target {
     const row = db.get<Target>('SELECT id,username,role,disabled FROM users WHERE id=?1', id);
     if (!row) throw notFound('用户不存在');
@@ -147,6 +147,31 @@ export function registerAdminRoutes(app: FastifyInstance, c: ServerContext): voi
     audit(who.user.id, '修改站点任务策略', 'site');
     return { settings };
   });
+  app.post('/api/admin/captcha-test', async (request) => {
+    const who = access.requireIdentity(request, { admin: true, write: true });
+    const started = await browser.openTestCaptcha(who.user.id);
+    logs.audit(who.user.id, '启动验证码拖动测试', { page: started.page });
+    return started;
+  });
+  app.get('/api/admin/captcha-test', async (request) => {
+    const who = access.requireIdentity(request, { admin: true });
+    const view = await browser.captchaView(who.user.id, 'captcha-test');
+    if (view.state === 'unavailable') throw notFound('验证码测试页面尚未启动');
+    return view;
+  });
+  app.post<{ Body: { type?: string; x?: number; y?: number; from?: { x?: number; y?: number }; to?: { x?: number; y?: number }; steps?: number } }>('/api/admin/captcha-test/input', async (request) => {
+    const who = access.requireIdentity(request, { admin: true, write: true });
+    const body = request.body ?? {};
+    await browser.captchaMouse(who.user.id, 'captcha-test', body as Record<string, unknown>);
+    logs.audit(who.user.id, '验证码拖动测试操作', { action: String(body.type ?? 'unknown') });
+    return { ok: true };
+  });
+  app.delete('/api/admin/captcha-test', async (request) => {
+    const who = access.requireIdentity(request, { admin: true, write: true });
+    await browser.closeTestCaptcha(who.user.id);
+    return { closed: true };
+  });
+
   app.get<{ Querystring: { owner?: string; state?: string; offset?: string; sort?: string } }>('/api/admin/tasks', async (request, reply) => {
     access.requireIdentity(request, { admin: true }); reply.header('cache-control', 'no-store');
     const query = request.query, offset = Number(query.offset ?? 0);
