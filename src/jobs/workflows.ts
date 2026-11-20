@@ -15,11 +15,21 @@ export type WorkflowContext = {
   pause: (detail: string) => void; event: (kind: string, detail: string) => void;
 };
 type AnswerState = {
+  kind?: 'prerequisite_quiz';
   phase: string; index: number; round: number; cursor: number; attempt?: Attempt; paper?: Paper;
   answers: Record<string, string[]>; explanations: Record<string, string>; preserve: string[];
-  confirmed?: boolean; nonce?: string; lock?: string; readbacks?: number; remaining?: number;
+  confirmed?: boolean; nonce?: string; lock?: string; readbacks?: number; submit_retried?: boolean; remaining?: number;
   records: Array<Record<string, unknown>>;
 };
+export const LEGACY_SUBMISSION_UNCONFIRMED = '平台尚未确认本次交卷，请稍后使用“回读提交结果”；不会自动重交';
+export const AUTO_SUBMISSION_UNCONFIRMED = '超星尚未确认原答卷的交卷状态。继续任务可再次核对。';
+
+export function autoChaoxingSubmission(task: TaskRow, input: JobInput, checkpoint: Checkpoint): boolean {
+  if (task.platform !== 'cx') return false;
+  return task.operation === 'answer' && input.options.auto_submit === true ||
+    task.operation === 'study' && input.options.auto_prerequisite_quizzes === true && checkpoint.workflow?.kind === 'prerequisite_quiz';
+}
+
 const scope = (c: WorkflowContext) => ({ id: c.task.id, generation: c.task.generation });
 async function call(c: WorkflowContext, method: string, params: Record<string, unknown>) {
   c.check();
@@ -30,20 +40,50 @@ async function call(c: WorkflowContext, method: string, params: Record<string, u
 
 export async function runWorkflow(c: WorkflowContext): Promise<void> {
   if (['answer', 'mastery'].includes(c.task.operation)) {
-    let pending = false;
-    const timer = setInterval(() => {
-      const attempt = c.checkpoint.workflow?.attempt;
-      if (!attempt || pending || c.signal.aborted) return;
-      pending = true;
-      void call(c, 'exam.heartbeat', { attempt_id: attempt.id, seconds: Math.max(1, nowSeconds() - (c.checkpoint.workflow.started_at ?? nowSeconds())) })
-        .catch((error) => { if ((error as any).code !== 'unsupported_operation' && !c.signal.aborted) { try { c.pause('考试计时同步失败，请核对官方页面后继续'); } catch {} } })
-        .finally(() => { pending = false; });
-    }, 30_000);
-    timer.unref();
-    try { return await answer(c); } finally { clearInterval(timer); }
+    await runAnswerWorkflow(c);
+    return;
   }
   if (c.task.operation === 'review') return review(c);
   return activity(c);
+}
+
+function newAnswerState(): AnswerState {
+  return { phase: 'new', index: 0, round: 0, cursor: 0, answers: {}, explanations: {}, preserve: [], records: [] };
+}
+
+async function runAnswerWorkflow(c: WorkflowContext, prerequisite?: Paper): Promise<'unconfirmed' | void> {
+  let pending = false;
+  const timer = setInterval(() => {
+    const attempt = c.checkpoint.workflow?.attempt;
+    if (!attempt || pending || c.signal.aborted) return;
+    pending = true;
+    void call(c, 'exam.heartbeat', { attempt_id: attempt.id, seconds: Math.max(1, nowSeconds() - (c.checkpoint.workflow.started_at ?? nowSeconds())) })
+      .catch((error) => { if ((error as any).code !== 'unsupported_operation' && !c.signal.aborted) { try { c.pause('考试计时同步失败，请核对官方页面后继续'); } catch {} } })
+      .finally(() => { pending = false; });
+  }, 30_000);
+  timer.unref();
+  try { return await answer(c, prerequisite); } finally { clearInterval(timer); }
+}
+
+export async function runPrerequisiteQuiz(c: WorkflowContext, paper: Paper): Promise<'completed' | 'unconfirmed' | 'paused'> {
+  const state: AnswerState = c.checkpoint.workflow?.kind === 'prerequisite_quiz'
+    ? c.checkpoint.workflow
+    : { ...newAnswerState(), kind: 'prerequisite_quiz', paper };
+  c.checkpoint.workflow = state;
+  const result = await runAnswerWorkflow({
+    ...c,
+    task: { ...c.task, operation: 'answer' },
+    input: { ...c.input, options: { ...c.input.options, use_ai: true, auto_submit: true, redo: false } },
+  }, paper);
+  if (result === 'unconfirmed') return result;
+  if (state.index === 0) return 'paused';
+  c.check();
+  const history = c.checkpoint.prerequisite_quizzes ??= { completed: [], records: [] };
+  history.completed.push(paper.id);
+  history.records.push(...state.records);
+  delete c.checkpoint.workflow;
+  c.save();
+  return 'completed';
 }
 
 async function review(c: WorkflowContext) {
@@ -139,13 +179,31 @@ async function activity(c: WorkflowContext) {
   if (c.checkpoint.skipped?.length) c.update(`见面课处理结束，${c.checkpoint.skipped.length} 项需要人工处理，请查看执行记录`, 100);
 }
 
-async function answer(c: WorkflowContext) {
+async function answer(c: WorkflowContext, prerequisite?: Paper) {
   const mastery = c.task.operation === 'mastery';
-  const ids = JSON.parse(c.task.units) as string[];
-  const state: AnswerState = c.checkpoint.workflow ?? { phase: 'new', index: 0, round: 0, cursor: 0, answers: {}, explanations: {}, preserve: [], records: [] };
+  const ids = prerequisite ? [prerequisite.id] : JSON.parse(c.task.units) as string[];
+  const state: AnswerState = c.checkpoint.workflow ?? newAnswerState();
   c.checkpoint.workflow = state;
+  const autoRecover = autoChaoxingSubmission(c.task, c.input, c.checkpoint);
+  if (autoRecover) state.readbacks = 0;
   const courseKey = `${c.course.id}/${c.course.recruit_id}`;
   const save = () => { c.check(); c.save(); };
+  const submit = async (lock: string, retry = false): Promise<boolean> => {
+    try {
+      await call(c, 'exam.write', {
+        attempt_id: state.attempt!.id, answers: state.answers, phase: 'submit',
+        ...(retry ? { retry: true, preserve_ids: state.preserve } : {}),
+      });
+    } catch (error) {
+      c.db.run("UPDATE operation_locks SET state='unknown' WHERE id=?1", lock);
+      if (c.signal.aborted) return false;
+      state.phase = 'readback'; save();
+      if (!autoRecover) { c.pause(`交卷结果待核对：${(error as Error).message}。继续时只回读，不重新交卷。`); return false; }
+      c.event('submission_pending', `正在核对原答卷：${(error as Error).message}`);
+    }
+    state.phase = 'readback'; state.readbacks = 0; save();
+    return true;
+  };
   const acceptOpened=async (opened:any):Promise<boolean>=>{
       let batches=0;
       while (!opened.ready && opened.attempt) {
@@ -158,6 +216,7 @@ async function answer(c: WorkflowContext) {
       (state as any).started_at = nowSeconds();
       for (const q of state.attempt!.questions) q.images = (q.images ?? []).map((url) => c.manager.registerImage(c.platformOwner, c.task.platform, url));
       state.answers = {}; state.explanations = {}; state.preserve = []; state.cursor = 0; state.confirmed = false; state.phase = 'answers';
+      delete state.submit_retried;
       for (const q of state.attempt!.questions) {
         if (validAnswer(q, q.correct_answer)) c.memory.remember(c.task.owner, c.task.platform, courseKey, q, q.correct_answer);
         if (validAnswer(q, q.answer)) { state.answers[q.id] = q.answer; state.preserve.push(q.id); }
@@ -170,12 +229,13 @@ async function answer(c: WorkflowContext) {
     c.check();
     if (['opening', 'resetting'].includes(state.phase)) { c.pause('开卷或重做请求结果尚未核对，请检查官方作答记录；不会自动重复开卷'); return; }
     if (state.phase === 'new') {
-      c.update(mastery ? '正在读取掌握度练习' : '正在读取作业考试');
-      const result = await call(c, mastery ? 'catalog.mastery' : 'catalog.papers', {});
-      const paper = (result.papers as Paper[]).find((p) => p.id === ids[state.index]);
+      c.update(prerequisite ? `正在处理前置测验：${prerequisite.name}` : mastery ? '正在读取掌握度练习' : '正在读取作业考试');
+      const paper = prerequisite ?? ((await call(c, mastery ? 'catalog.mastery' : 'catalog.papers', {})).papers as Paper[])
+        .find((p) => p.id === ids[state.index]);
       if (!paper) { c.pause('所选试卷已不在平台目录中，请刷新后核对'); return; }
       if (paper.done && !c.input.options.redo || mastery && paper.score != null && paper.score >= 100) {
-        c.checkpoint.completed.push(paper.id); state.index++; save(); continue;
+        if (!prerequisite) c.checkpoint.completed.push(paper.id);
+        state.index++; save(); continue;
       }
       if (!paper.available || paper.ends_at != null && paper.ends_at <= nowSeconds()) { c.pause(paper.reason || '试卷尚未开放、已经截止或需要先在官方页面开考'); return; }
       const resource = digest(JSON.stringify([c.input.account, c.task.platform, courseKey, paper.id]));
@@ -237,24 +297,44 @@ async function answer(c: WorkflowContext) {
           c.db.run('INSERT INTO operation_locks(id,owner,platform,task_id,state,created_at,resource) VALUES(?1,?2,?3,?4,\'pending\',?5,?6)', lock, c.task.owner, c.task.platform, c.task.id, nowSeconds(), resource);
           save();
         });
-        try {
-          await call(c, 'exam.write', { attempt_id: attempt.id, answers: state.answers, phase: 'submit' });
-          state.phase = 'readback'; state.readbacks = 0; save();
-        } catch (error) {
-          c.db.run("UPDATE operation_locks SET state='unknown' WHERE id=?1", lock);
-          state.phase = 'readback';
-          if (!c.signal.aborted) { save(); c.pause(`交卷结果待核对：${(error as Error).message}。继续时只回读，不重新交卷。`); }
-          return;
-        }
+        if (!await submit(lock)) return;
       }
     }
     if (state.phase === 'submitting') { state.phase = 'readback'; save(); }
     if (state.phase === 'readback') {
       c.update(`正在回读交卷结果：${attempt.name}`);
-      const result = await call(c, 'exam.readback', { attempt_id: attempt.id });
+      const canRetry = autoRecover && !state.submit_retried && (attempt.expires_at == null || attempt.expires_at > nowSeconds());
+      let result;
+      try {
+        result = await call(c, 'exam.readback', { attempt_id: attempt.id, ...(canRetry && (state.readbacks ?? 0) >= 5 ? { check_retry: true } : {}) });
+      } catch (error) {
+        const code = (error as { code?: string }).code ?? '';
+        if (!autoRecover || !['platform_unavailable', 'module_timeout'].includes(code)) throw error;
+        c.check();
+        result = {};
+      }
       if (!result.confirmed || result.attempt_id !== attempt.id) {
         state.readbacks = (state.readbacks ?? 0) + 1; save();
-        if (state.readbacks >= 6) { c.pause('平台尚未确认本次交卷，请稍后使用“回读提交结果”；不会自动重交'); return; }
+        if (state.readbacks >= 6) {
+          if (canRetry && result.retryable === true && result.attempt_id === attempt.id && state.lock) {
+            const lock = state.lock;
+            const retrying = c.db.transaction(() => {
+              const updated = c.db.run("UPDATE operation_locks SET state='pending' WHERE id=?1 AND task_id=?2 AND state IN ('pending','unknown')", lock, c.task.id);
+              if (!updated.changes) return false;
+              state.submit_retried = true; state.phase = 'submitting'; save();
+              return true;
+            });
+            if (retrying) {
+              c.update(`正在补交原答卷：${attempt.name}`);
+              c.event('submission_retry_pending', `正在补交原答卷：${attempt.name}`);
+              if (!await submit(lock, true)) return;
+              continue;
+            }
+          }
+          if (prerequisite && autoRecover) return 'unconfirmed';
+          c.pause(autoRecover ? AUTO_SUBMISSION_UNCONFIRMED : LEGACY_SUBMISSION_UNCONFIRMED);
+          return;
+        }
         await sleep(1500, c.signal); continue;
       }
       if (state.lock) c.db.run("UPDATE operation_locks SET state='confirmed' WHERE id=?1", state.lock);
@@ -278,8 +358,10 @@ async function answer(c: WorkflowContext) {
       state.phase = 'next'; save();
     }
     if (state.phase === 'next') {
-      c.checkpoint.completed.push(ids[state.index]!); state.index++; state.round = 0; state.phase = 'new'; state.readbacks = 0;
-      c.update(`已确认 ${state.index} / ${ids.length} 份${mastery ? '练习' : '试卷'}`, Math.round(state.index / ids.length * 100)); save();
+      if (!prerequisite) c.checkpoint.completed.push(ids[state.index]!);
+      state.index++; state.round = 0; state.phase = 'new'; state.readbacks = 0;
+      if (!prerequisite) c.update(`已确认 ${state.index} / ${ids.length} 份${mastery ? '练习' : '试卷'}`, Math.round(state.index / ids.length * 100));
+      save();
     }
   }
   if (mastery && state.remaining) c.update(`掌握度处理结束，仍有 ${state.remaining} 个知识点未确认达到 100%`, 100);

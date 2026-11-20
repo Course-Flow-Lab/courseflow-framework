@@ -1,21 +1,51 @@
 import type { FastifyInstance } from 'fastify';
 import type { ServerContext } from '../context.ts';
+import { notFound } from '../../core/errors.ts';
+import { taskPlatformOwner } from '../../core/platform-accounts.ts';
 
 export function registerTasksRoutes(app: FastifyInstance, context: ServerContext): void {
-  const { jobs } = context;
+  const { jobs, browser, logs } = context;
   const { requireIdentity } = context.access;
+  /** Browser pages are owned by the platform-account scope, not the site user. */
+  const taskScope = (task: ReturnType<typeof jobs.get>, owner: string) =>
+    taskPlatformOwner(context.db, { owner, platform: task.platform, account_id: task.account_id });
+  /** The module keeps the captcha page open only while it waits for manual input. */
+  const withCaptcha = (task: ReturnType<typeof jobs.get>, owner: string) => {
+    const scope = taskScope(task, owner);
+    return {
+      ...task,
+      manual_captcha: task.detail.includes('等待人工完成验证码') && browser.hasCaptcha(scope, task.id),
+    };
+  };
   app.get('/api/tasks', async (request) => {
     const current = requireIdentity(request);
-    return { tasks: jobs.list(current.user.id) };
+    return { tasks: jobs.list(current.user.id).map((task) => withCaptcha(task, current.user.id)) };
   });
 
   app.get<{ Params: { id: string } }>('/api/tasks/:id', async (request) => {
     const current = requireIdentity(request);
     return {
-      task: jobs.get(current.user.id, request.params.id),
+      task: withCaptcha(jobs.get(current.user.id, request.params.id), current.user.id),
       events: jobs.events(current.user.id, request.params.id),
       ...jobs.details(current.user.id, request.params.id),
     };
+  });
+
+  app.get<{ Params: { id: string } }>('/api/tasks/:id/captcha', async (request) => {
+    const current = requireIdentity(request);
+    const task = jobs.get(current.user.id, request.params.id);
+    const view = await browser.captchaView(taskScope(task, current.user.id), task.id);
+    if (view.state === 'unavailable') throw notFound('当前没有等待人工处理的验证码');
+    return view;
+  });
+
+  app.post<{ Params: { id: string }; Body: { type?: string; x?: number; y?: number; from?: { x?: number; y?: number }; to?: { x?: number; y?: number }; steps?: number } }>('/api/tasks/:id/captcha', async (request) => {
+    const current = requireIdentity(request, { write: true });
+    const task = jobs.get(current.user.id, request.params.id);
+    const body = request.body ?? {};
+    await browser.captchaMouse(taskScope(task, current.user.id), task.id, body as Record<string, unknown>);
+    logs.audit(current.user.id, '人工验证码操作', { task: task.id, action: String(body.type ?? 'unknown') });
+    return { ok: true };
   });
 
   app.post<{ Params: { id: string }; Body: { answers?: Record<string, string[]>; text?: string; replace_existing?: boolean } }>('/api/tasks/:id/answers', async (request) => {
