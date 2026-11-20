@@ -293,6 +293,19 @@ export class BrowserService {
     const dispatch = (type: string, x: number, y: number, extra: Record<string, unknown> = {}) =>
       page.cdp.call('Input.dispatchMouseEvent', { type, x, y, ...extra }, page.sessionId);
     const type = String(action.type ?? '');
+    if (type === 'press' || type === 'move' || type === 'release') {
+      const x = coordinate(action.x, 'x');
+      const y = coordinate(action.y, 'y');
+      if (type === 'press') {
+        await dispatch('mouseMoved', x, y);
+        await dispatch('mousePressed', x, y, { button: 'left', clickCount: 1 });
+      } else if (type === 'move') {
+        await dispatch('mouseMoved', x, y);
+      } else {
+        await dispatch('mouseReleased', x, y, { button: 'left', clickCount: 1 });
+      }
+      return { ok: true };
+    }
     if (type === 'click') {
       const x = coordinate(action.x, 'x');
       const y = coordinate(action.y, 'y');

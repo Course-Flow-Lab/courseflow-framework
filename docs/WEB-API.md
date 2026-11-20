@@ -81,7 +81,7 @@ async function close() {
 | `POST /api/admin/tasks/:id/:action` | `pause`、`resume`、`stop`、`move` 或 `migrate`。排序提供 `direction`，迁移提供 `to_version` |
 | `GET /api/admin/tasks/:id/logs` | 下载该任务的纯文本日志 |
 | `POST/GET/DELETE /api/admin/captcha-test` | 启动、读取或关闭无账号的官方验证码拖动测试页面 |
-| `POST /api/admin/captcha-test/input` | 向测试页面转发 `click` 或 `drag` 指针操作 |
+| `POST /api/admin/captcha-test/input` | 向测试页面转发 `click`、`drag` 或实时 `press`/`move`/`release` 指针操作 |
 
 管理任务操作记录操作者；删除记录保留在审计日志，独立写入凭证和交卷锁不随任务清除。删除只作用于本站，不删除平台进度或作答。排序在分页前完成，同值按创建时间和任务标识稳定排列，队列上移下移仍只控制所属用户的执行顺序。管理员上限和并行许可存于现有 `site_settings`，无需数据库结构或模块协议迁移。默认值保留原有 1–8 项个人并发设置；调度器对停用账号拒绝创建和继续任务。
 
@@ -98,7 +98,7 @@ async function close() {
 | 接口 | 用途 |
 | --- | --- |
 | `GET /api/tasks/:id/captcha` | 返回官方验证码弹窗截图 `{state:"ready",image,mime,x,y,width,height}`；加载中为 `{state:"loading"}`，页面已关闭返回 404 |
-| `POST /api/tasks/:id/captcha` | 转发指针操作，`{type:"click",x,y}` 或 `{type:"drag",from:{x,y},to:{x,y}}`；坐标是页面 CSS 像素，需要 CSRF |
+| `POST /api/tasks/:id/captcha` | 转发指针操作，`{type:"click",x,y}`、`{type:"drag",from:{x,y},to:{x,y}}`，或实时 `press`/`move`/`release`（均带 `x,y`）；坐标是页面 CSS 像素，需要 CSRF |
 
 只有任务所有者可读取或操作；管理员页面默认不代用户完成验证码。截图不包含 Cookie、令牌或弹窗之外的页面内容。用户操作后，模块仍必须通过平台 `validateSlideToken` 才恢复学习。
 
