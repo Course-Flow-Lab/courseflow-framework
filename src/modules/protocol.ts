@@ -86,7 +86,11 @@ export function deferredChapterId(id: string): string | undefined {
 }
 
 export type Question = { id: string; text: string; kind: string; options: Array<{ id: string; text: string }>; answer: string[]; correct_answer?: string[]; explanation?: string; images?: string[]; blanks: number };
-export type Paper = { id: string; name: string; category: string; available: boolean; done: boolean; can_redo?: boolean; can_review?: boolean; reason?: string; score?: number | null; attempts_left?: number | null; ends_at?: number | null };
+export type Paper = {
+  id: string; name: string; category: string; available: boolean; done: boolean;
+  chapter_id?: string; chapter_order?: number; task_point?: boolean;
+  can_redo?: boolean; can_review?: boolean; reason?: string; score?: number | null; attempts_left?: number | null; ends_at?: number | null;
+};
 export type Attempt = { id: string; paper_id: string; name: string; questions: Question[]; expires_at: number | null };
 
 export type RpcRequest = { jsonrpc: '2.0'; id: number; method: string; params?: unknown };

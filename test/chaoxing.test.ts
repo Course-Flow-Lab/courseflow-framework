@@ -109,7 +109,9 @@ test('超星勾选待解锁章节后接续学习，只执行所选单元', {skip
         const point=url.searchParams.get('knowledgeid');
         assert.ok(point==='1'||point==='2'&&written.includes('job-1')||point==='3'&&chapterThreeOpen||point==='4');
         const id='job-'+point;
-        return new Response('mArg='+JSON.stringify({attachments:[{jobid:id,type:'document',isPassed:written.includes(id),property:{name:'文档 '+point}}]})+';');
+        const attachments: object[] = [{jobid:id,type:'document',isPassed:written.includes(id),property:{name:'文档 '+point}}];
+        if(point==='2') attachments.push({jobid:'work-off',type:'workid',job:true,property:{title:'未启用自动作答'}});
+        return new Response('mArg='+JSON.stringify({attachments})+';');
       }
       case '/mooc-ans/job/document':
         written.push(url.searchParams.get('jobid')!);
@@ -142,3 +144,100 @@ test('超星勾选待解锁章节后接续学习，只执行所选单元', {skip
   assert.deepEqual(completed.completed,completed.units);
   assert.deepEqual(written,completed.units,'只执行平台已解锁且尚未完成的真实单元');
 });
+
+for (const uncertainSubmit of [false, true]) {
+  test(`超星前置测验${uncertainSubmit ? '提交响应丢失后只回读并接续' : '自动作答并在解锁后接续'}`, {skip:!available,timeout:35_000}, async t => {
+    const {runtime}=await boot('courseflow-cx-prerequisite-quiz-');
+    t.after(()=>runtime.close());
+    runtime.manager.install(moduleDir);
+    runtime.manager.configure('cx',{source:'live',python});
+    const session=await setupAdmin(runtime);
+    const steps: string[] = [];
+    let submitted=false;
+    t.mock.method(runtime.ai,'generate',async (_owner:string,prompt:string)=>{
+      assert.match(prompt,/1\+1/);
+      steps.push('model');
+      return '{"answer":"B"}';
+    });
+    t.mock.method(globalThis,'fetch',async (input:URL,init:RequestInit)=>{
+      const url=new URL(input);
+      switch(url.pathname){
+        case '/fanyalogin': return new Response('{"status":true}',{headers:{'set-cookie':'_uid=7; Domain=chaoxing.com; Path=/; Secure'}});
+        case '/space/index':
+        case '/mooc2-ans/visit/interaction': return new Response('');
+        case '/mooc2-ans/visit/courselistdata':
+          return new Response('<div class="course"><a href="/a?cpi=33"></a><input class="clazzId" value="22"><input class="courseId" value="11"><span class="course-name">合成课程</span></div>');
+        case '/mooc2-ans/mycourse/studentcourse':
+          return new Response([true,submitted,true].map((open,index)=>
+            `<div id="cur${index+1}"><a class="clicktitle">章节 ${index+1}</a>${open?'':'<span class="bntHoverTips">需完成之前闯关任务点，该章节才能解锁</span>'}</div>`).join(''));
+        case '/gas/clazz': return Response.json({data:[]});
+        case '/api/phone/jobunfinishedList': return Response.json({data:submitted?[]:[{jobid:'work-11'}]});
+        case '/api/phone/jobfinishedList':
+          if(url.searchParams.get('jobid')==='work-11') steps.push('readback');
+          return Response.json({data:submitted?[{jobid:'work-11'}]:[]});
+        case '/mooc-ans/knowledge/cards': {
+          if(url.searchParams.get('num')!=='0') return new Response('');
+          const point=url.searchParams.get('knowledgeid');
+          assert.ok(point!=='2'||submitted,'锁定章节不应读取卡片');
+          const id='document-'+point;
+          const attachments:object[]=[{jobid:id,type:'document',isPassed:steps.includes(id),property:{name:id}}];
+          if(point==='1') attachments.push(
+            {jobid:'work-11',type:'workid',property:{title:'合成前置测验'}},
+            {jobid:'work-optional',type:'workid',property:{title:'普通测验'}},
+          );
+          if(point!=='1') attachments.push({jobid:'work-later-'+point,type:'workid',job:true});
+          return new Response('mArg='+JSON.stringify({attachments})+';');
+        }
+        case '/mooc-ans/job/document':
+          steps.push(url.searchParams.get('jobid')!);
+          return Response.json({status:true});
+        case '/mooc-ans/api/work': {
+          assert.equal(url.searchParams.get('jobid'),'work-11','只打开前序任务点测验');
+          assert.ok(steps.includes('document-1'),'先完成前置章节的学习单元');
+          steps.push('open');
+          const question=(id:string,title:string)=>`<div class="singleQuesId" data="${id}"><div class="TiMu" data="0"><div class="Zy_TItle">${title}</div><ul><li aria-label="A. 1"></li><li aria-label="B. 2"></li></ul></div></div>`;
+          return new Response('<form action="/mooc-ans/work/addStudentWorkNew"><input name="workId" value="11"><input name="workAnswerId" value="66"><input name="answerold" value="A">'+question('old','原有答案')+question('new','1+1=?')+'</form>');
+        }
+        case '/mooc-ans/work/addStudentWorkNew': {
+          const form=new URLSearchParams(String(init.body));
+          assert.equal(form.get('answerold'),'A');
+          assert.equal(form.get('answernew'),'B');
+          if(form.get('pyFlag')==='1') {
+            steps.push('draft');
+            return Response.json({status:true});
+          }
+          assert.equal(submitted,false,'前置测验不得重复交卷');
+          steps.push('submit');
+          submitted=true;
+          return Response.json({status:!uncertainSubmit});
+        }
+        default: assert.fail('未声明的模拟网络请求：'+url.pathname);
+      }
+    });
+    const begin=await call(runtime,{method:'POST',url:'/api/platforms/cx/login',session,body:{method:'password'}});
+    const challenge=begin.body.challenge.session;
+    await call(runtime,{method:'POST',url:`/api/platforms/cx/login/${challenge}/submit`,session,body:{fields:{username:'synthetic',password:'synthetic'}}});
+    assert.equal((await call(runtime,{method:'POST',url:`/api/platforms/cx/login/${challenge}/poll`,session})).body.state,'connected');
+    const root='/api/platforms/cx/courses/11/22';
+    const created=await call(runtime,{method:'POST',url:root+'/study',session,body:{unit_ids:['locked:2','document-3'],auto_prerequisite_quizzes:true}});
+    assert.equal(created.status,200,JSON.stringify(created.body));
+    const id=created.body.task.id;
+    const taskUrl='/api/tasks/'+id;
+    if(uncertainSubmit){
+      await waitFor(runtime,session,id,'paused');
+      const paused=(await call(runtime,{url:taskUrl,session})).body;
+      assert.equal(paused.workflow.phase,'readback');
+      assert.deepEqual(paused.task.completed,['document-1']);
+      assert.equal((await call(runtime,{method:'POST',url:taskUrl+'/answers',session,body:{answers:{new:['A']}}})).status,409);
+      assert.equal((await call(runtime,{method:'POST',url:taskUrl+'/readback',session})).status,200);
+      assert.equal((await call(runtime,{method:'POST',url:taskUrl+'/resume',session})).status,200);
+    }
+    const finished=await waitFor(runtime,session,id,'completed');
+    assert.deepEqual(finished.completed,['document-1','document-2','document-3']);
+    const details=(await call(runtime,{url:taskUrl,session})).body;
+    assert.equal(details.workflow.records.length,1);
+    assert.equal(details.workflow.records[0].paper.id,'work-11');
+    assert.deepEqual(steps,['document-1','open','model','draft','submit','readback','document-2','document-3']);
+    assert.equal(runtime.db.get<{state:string}>('SELECT state FROM operation_locks WHERE task_id=?1',id)?.state,'confirmed');
+  });
+}

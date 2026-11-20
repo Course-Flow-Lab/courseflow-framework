@@ -115,7 +115,7 @@ export function registerPlatformsRoutes(app: FastifyInstance, context: ServerCon
     },
   );
 
-  app.post<{ Params: { pid: string; id: string; rid: string }; Body: { unit_ids?: string[]; operation?: string } }>(
+  app.post<{ Params: { pid: string; id: string; rid: string }; Body: { unit_ids?: string[]; operation?: string; auto_prerequisite_quizzes?: boolean } }>(
     '/api/platforms/:pid/courses/:id/:rid/study',
     async (request) => {
       const current = requireIdentity(request, { write: true });
@@ -145,6 +145,7 @@ export function registerPlatformsRoutes(app: FastifyInstance, context: ServerCon
           course,
           unit_ids: unitIds,
           operation,
+          options: { auto_prerequisite_quizzes: request.body?.auto_prerequisite_quizzes },
         }),
       };
     },
