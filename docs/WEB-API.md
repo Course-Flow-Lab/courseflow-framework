@@ -56,7 +56,7 @@ async function close() {
 
 当 `capabilities.deferred_study` 为 `true`，超星目录中标为 `selectable_after_unlock: true` 的章节可与普通单元一起放入 `POST /api/platforms/cx/courses/:id/:rid/study` 的 `unit_ids`。客户端和任务执行器按目录的 `chapter_order` 补选前序未完成的可学单元。平台解锁已选章节后，任务会用实际学习单元替换 `task.units` 中的章节占位。所选内容仍需解锁或人工处理时，处理后可继续原任务。
 
-框架的 `capabilities.auto_prerequisite_quizzes` 和超星模块的同名课程操作均可用时，学习请求可传 `auto_prerequisite_quizzes: true`（`/jobs` 中放在 `options`）。此选项只对选中待解锁章节的超星学习任务生效。框架按目录顺序处理已学完章节中的前置任务点测验，每次确认交卷后刷新解锁状态。作答记录保存在同一任务详情，结果不明时用该任务的回读接口核对。
+框架的 `capabilities.auto_prerequisite_quizzes` 和超星模块的同名课程操作均可用时，学习请求可传 `auto_prerequisite_quizzes: true`（`/jobs` 中放在 `options`）。此选项只对选中待解锁章节的超星学习任务生效。框架按目录顺序处理已学完章节中的前置任务点测验，每次确认交卷后刷新解锁状态。作答记录保存在同一任务详情。支持补交的超星模块会核对原答卷状态，确认仍为草稿时自动补交一次。
 
 
 ## 站点管理

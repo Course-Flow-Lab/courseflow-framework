@@ -21,6 +21,7 @@ export type PlatformDescriptor = {
   unit_kinds: string[];
   max_speed?: number;
   keepalive_seconds?: number;
+  supports_submission_retry?: boolean;
   score_sections?: PresentationTab[];
   presentation?: { tabs?: PresentationTab[]; actions?: PresentationTab[] };
 };
@@ -280,6 +281,7 @@ export function validateManifest(raw: unknown): Manifest {
       unit_kinds: unitKinds,
       max_speed: typeof platformRaw.max_speed === 'number' ? platformRaw.max_speed : undefined,
       keepalive_seconds: typeof platformRaw.keepalive_seconds === 'number' && Number.isInteger(platformRaw.keepalive_seconds) && platformRaw.keepalive_seconds >= 60 ? platformRaw.keepalive_seconds : undefined,
+      ...(platformRaw.supports_submission_retry === true ? { supports_submission_retry: true } : {}),
       score_sections: readScoreSections(platformRaw.score_sections),
       presentation,
     },
