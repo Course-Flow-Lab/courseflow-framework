@@ -1,0 +1,13 @@
+**/.git
+**/node_modules
+**/target
+**/dist
+**/__pycache__
+**/*.pyc
+**/.env*
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/secret.key
+**/data
+**/*.log

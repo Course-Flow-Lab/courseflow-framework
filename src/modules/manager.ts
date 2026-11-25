@@ -13,7 +13,7 @@ import type { BrowserService } from '../services/browser.ts';
 import type { AnswerMemory } from '../services/answers.ts';
 import { validateQuestion, type Evidence } from '../question-bank/index.js';
 import { preferences, quietFor } from '../core/preferences.ts';
-import { digest, nowSeconds, randomId } from '../core/domain.ts';
+import { digest, isOvernight, nowSeconds, randomId } from '../core/domain.ts';
 import { AppError, badRequest, notFound } from '../core/errors.ts';
 import type { Course, DescribeResult, Manifest, PlatformDescriptor, Unit, Question } from './protocol.ts';
 import { resolvePresentation, satisfiesRange, validateManifest } from './protocol.ts';
@@ -326,17 +326,23 @@ export class ModuleManager {
   }
 
   private async maintain(): Promise<void> {
+    if (isOvernight()) return;
     const rows = this.db.all<{ owner: string; scope: string }>("SELECT owner,scope FROM secrets WHERE scope LIKE '%/session'");
     for (const row of rows) {
+      if (isOvernight()) return;
       const platform = row.scope.slice(0, -8);
       const module = this.db.get<ModuleRow>('SELECT * FROM modules WHERE id=?1 AND enabled=1', platform);
       if (!module) continue;
       const interval = (JSON.parse(module.manifest) as Manifest).platform.keepalive_seconds;
       const key = `${row.owner}/${platform}`;
-      if (!interval || nowSeconds() - (this.maintained.get(key) ?? 0) < interval) continue;
-      this.maintained.set(key, nowSeconds());
+      const now = nowSeconds();
+      if (!interval || now - (this.maintained.get(key) ?? 0) < interval) continue;
       try { await this.invoke(row.owner, platform, 'auth.keepalive', {}); }
-      catch { this.log('warn', `平台 ${platform} 登录保活失败，可在平台连接中重新扫码`); }
+      catch (error) {
+        if (error instanceof AppError && error.code === 'keepalive_overnight') return;
+        this.log('warn', `平台 ${platform} 登录保活失败，可在平台连接中重新扫码`);
+      }
+      this.maintained.set(key, now);
     }
   }
 
@@ -593,7 +599,12 @@ export class ModuleManager {
   }
 
   private async call(platform: string, method: string, params: unknown): Promise<unknown> {
+    const checkKeepalive = () => {
+      if (method === 'auth.keepalive' && isOvernight()) throw new AppError(409, 'keepalive_overnight', '北京时间 23:00–07:00 暂停所有账号的后台登录保活');
+    };
+    checkKeepalive();
     const runner = await this.ensureRunner(platform);
+    checkKeepalive();
     return runner.call(method, params);
   }
 

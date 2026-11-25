@@ -9,9 +9,9 @@ Framework 0.1.18 提供可选的共享识别服务，并新增 WebUI 人工验�
 需要 Python 3.12；虚拟环境和运行文件放在源码之外：
 
 ```sh
-uv venv "$HOME/.local/share/courseflow-captcha/venv" --python 3.12
-uv pip install --python "$HOME/.local/share/courseflow-captcha/venv/bin/python" -r support/captcha/requirements.txt
-PYTHONDONTWRITEBYTECODE=1 "$HOME/.local/share/courseflow-captcha/venv/bin/python" support/captcha/server.py --host 127.0.0.1 --port 8190
+uv venv "$HOME/workspace/courseflow/captcha/venv" --python 3.12
+uv pip install --python "$HOME/workspace/courseflow/captcha/venv/bin/python" -r support/captcha/requirements.txt
+PYTHONDONTWRITEBYTECODE=1 "$HOME/workspace/courseflow/captcha/venv/bin/python" support/captcha/server.py --host 127.0.0.1 --port 8190
 ```
 
 在 Framework 服务环境中设置并重启：
@@ -88,7 +88,7 @@ ZHS 将打开组件、匹配拖动和平台确认分成短调用，总计最多�
 
 ```sh
 node --test test/captcha.test.ts test/captcha-browser.test.ts
-PYTHONDONTWRITEBYTECODE=1 "$HOME/.local/share/courseflow-captcha/venv/bin/python" -m unittest discover -s support/captcha -p test_server.py -v
+PYTHONDONTWRITEBYTECODE=1 "$HOME/workspace/courseflow/captcha/venv/bin/python" -m unittest discover -s support/captcha -p test_server.py -v
 ```
 
 Python 检查使用生成的文字与透明滑块图片；Chromium 检查用本地拦截响应，不访问真实验证码服务。ZHS 的模拟宿主测试覆盖开始学习和保存时触发、平台拒绝、失败关闭、重复挑战上限和计时恢复。以上结果不能替代真实平台的验证码通过率验收。

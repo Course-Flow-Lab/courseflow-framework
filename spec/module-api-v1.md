@@ -45,7 +45,7 @@
 - `checkpoint_compatible_from` 为可选的确切模块版本数组，例如 `["0.3.8"]`。只有新模块能继续读取所列版本保存的任务检查点和相关模块状态时才声明。Framework 0.1.14 允许用户显式迁移兼容的暂停任务，并原样保留检查点。
 - 网络权限是精确主机或 `*.` 子域规则，不是 URL。根域名与子域规则需要分别声明。
 - `when` 由框架判断，仅支持 `course.kind`、`course.family` 的字符串相等；未知条件拒绝安装。
-- 可选 `keepalive_seconds` 为不小于 60 的整数。宿主定期对已连接用户调用 `auth.keepalive`，模块应仅刷新登录状态，不发学习写入。
+- 可选 `keepalive_seconds` 为不小于 60 的整数。宿主定期对已连接用户调用 `auth.keepalive`，模块应仅刷新登录状态，不发学习写入。后台保活在北京时间 23:00（含）至 07:00（不含）对所有用户和团队绑定账号停止，不受个人夜间暂停设置或临时覆盖影响；07:00 后恢复原有调用间隔。
 
 目录安装仅复制清单、入口和 `runtime.files`。npm 格式 `.tgz` 使用 `package/` 根目录。框架固定声明文件的 sha256，保存至数据库的模块安装记录，启动时复核内容。
 
@@ -146,6 +146,8 @@ Node.js 使用权限模型限制文件、网络和子进程。二进制直接作
 `answers` 为题目编号到字符串数组的映射。`phase` 为 `draft` 或 `submit`。草稿分批执行，每次只发一批并返回游标；`preserve_ids` 排除平台原有作答。掌握度不支持草稿时返回 `draft_supported:false`，仍等待用户确认后提交。
 
 宿主在交卷前持久化操作锁。模块不能把 HTTP 应答视为已确认提交；回读必须返回原 `attempt_id`。`graded_answers` 只能包含平台公开或已判为正确的答案。已提交内容不得通过写入式开卷接口读取。
+
+超星可提供 `exam.reconcile {session,course,paper_id,attempt_id}`，用于目录仍未完成但任务有历史交卷记录的前置测验。只读取同一份官方答卷；结果为 `submitted`、`below_pass`、`unknown` 或明确可作答的 `draft`（附 `ready:true,attempt`）。只在最后一种结果且答卷编号匹配时启用独立的 `exam.write` / `exam.readback` 作答上下文（`reconciled:true`）。它不覆盖历史提交记录或操作锁，写入前重新核对官方状态，未知结果只读不重发。章节解锁仍以官方目录为准。
 
 ### 超额问答选项（框架 ≥ 0.1.6）
 

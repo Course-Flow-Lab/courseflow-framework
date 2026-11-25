@@ -113,15 +113,95 @@ test('模型的生物多选答案按标签生成草稿，保留已有答案并�
   };
   const task = runtime.jobs.create(owner, { platform: 'sim', course, unit_ids: ['paper'], operation: 'answer' });
   await waitFor(runtime, session, task.id, 'paused');
-  assert.equal((runtime.jobs.details(owner, task.id).workflow as any).phase, 'waiting_answers');
-  assert.match(runtime.jobs.get(owner, task.id).detail, /第 2 \/ 2 题/);
-  runtime.jobs.resume(owner, task.id);
-  await waitFor(runtime, session, task.id, 'paused');
   const state = runtime.jobs.details(owner, task.id).workflow as any;
   assert.equal(state.phase, 'waiting_submit', runtime.jobs.get(owner, task.id).detail);
   assert.deepEqual(state.answers, { old: ['a'], biology: ['remote-101', 'remote-104'] });
   assert.deepEqual(drafts[0].preserve_ids, ['old']);
   assert.equal(generations, 2); assert.equal(opens, 1);
+  assert.equal(state.model_diagnostics.length, 1);
+  assert.equal(state.model_diagnostics[0].question_id, 'biology');
+  assert.equal(state.model_diagnostics[0].raw, '{"answer":["Z"]}');
+  assert.ok(runtime.jobs.events(owner, task.id).some(event => event.kind === 'model_answer_retry'));
+  const row = runtime.db.get<{ checkpoint: Uint8Array }>('SELECT checkpoint FROM tasks WHERE id=?1', task.id)!;
+  assert.ok(!Buffer.from(row.checkpoint).includes(Buffer.from('{"answer":["Z"]}')));
+});
+
+test('模型连续两次格式错误后暂停并保留诊断，补答继续时不重复开卷', async (t) => {
+  const { runtime } = await boot(); t.after(() => runtime.close());
+  const session = await setupAdmin(runtime); const { owner, course } = await connected(runtime, session);
+  let opens = 0, generations = 0;
+  runtime.ai.generate = async () => { generations++; return '{"answer":"Z"}'; };
+  runtime.manager.invoke = async (_owner, _platform, method, params) => {
+    if (method === 'catalog.papers') return { papers: [paper] };
+    if (method === 'exam.open') { opens++; return { ready: true, attempt: structuredClone(attempt) }; }
+    if (method === 'exam.write') { assert.equal(params.phase, 'draft'); return { done: true, cursor: 1 }; }
+    throw new Error(method);
+  };
+  const task = runtime.jobs.create(owner, { platform: 'sim', course, unit_ids: ['paper'], operation: 'answer' });
+  const paused = await waitFor(runtime, session, task.id, 'paused');
+  assert.match(paused.detail, /第 2 \/ 2 题/);
+  const pending = runtime.jobs.details(owner, task.id).workflow as any;
+  assert.equal(pending.phase, 'waiting_answers');
+  assert.deepEqual(pending.answers, { old: ['a'] });
+  assert.equal(pending.model_diagnostics.length, 2);
+  assert.deepEqual(pending.model_diagnostics.map((failure: any) => failure.retrying), [true, false]);
+  assert.equal(generations, 2);
+  runtime.jobs.answers(owner, task.id, { answers: { new: ['b'] } });
+  runtime.jobs.resume(owner, task.id);
+  await waitFor(runtime, session, task.id, 'paused');
+  assert.equal((runtime.jobs.details(owner, task.id).workflow as any).phase, 'waiting_submit');
+  assert.equal(generations, 2); assert.equal(opens, 1);
+});
+
+test('模型缺少课程资料时保留原因和已有答案，补答后沿用原答卷', async (t) => {
+  const { runtime } = await boot(); t.after(() => runtime.close());
+  const session = await setupAdmin(runtime); const { owner, course } = await connected(runtime, session);
+  const judge = { ...question('lecture'), kind: 'judge', text: '老师在课上是否支持这个观点？', options: [{ id: 'A', text: '对' }, { id: 'B', text: '错' }] };
+  let opens = 0, generations = 0; const drafts: any[] = [];
+  runtime.ai.generate = async () => { generations++; return '{"answer":null,"explanation":"缺少老师在课程中的具体观点，无法判断。"}'; };
+  runtime.manager.invoke = async (_owner, _platform, method, params) => {
+    if (method === 'catalog.papers') return { papers: [paper] };
+    if (method === 'exam.open') { opens++; return { ready: true, attempt: { ...attempt, questions: [question('old', ['a']), judge] } }; }
+    if (method === 'exam.write') { assert.equal(params.phase, 'draft'); drafts.push(params); return { done: true, cursor: 1 }; }
+    throw new Error(method);
+  };
+  const task = runtime.jobs.create(owner, { platform: 'sim', course, unit_ids: ['paper'], operation: 'answer' });
+  const paused = await waitFor(runtime, session, task.id, 'paused');
+  assert.match(paused.detail, /第 2 \/ 2 题.*缺少老师在课程中的具体观点/);
+  assert.doesNotMatch(paused.detail, /选项不符/);
+  const pending = runtime.jobs.details(owner, task.id).workflow as any;
+  assert.equal(pending.phase, 'waiting_answers');
+  assert.deepEqual(pending.answers, { old: ['a'] });
+  assert.equal(pending.model_diagnostics.length, 1);
+  assert.equal(pending.model_diagnostics[0].code, 'answer_unavailable');
+  assert.equal(pending.model_diagnostics[0].retrying, false);
+  assert.equal(drafts.length, 0);
+  runtime.jobs.answers(owner, task.id, { answers: { lecture: ['false'] } });
+  runtime.jobs.resume(owner, task.id);
+  await waitFor(runtime, session, task.id, 'paused');
+  assert.equal((runtime.jobs.details(owner, task.id).workflow as any).phase, 'waiting_submit');
+  assert.deepEqual(drafts[0].answers, { old: ['a'], lecture: ['false'] });
+  assert.equal(opens, 1); assert.equal(generations, 1);
+});
+
+test('视频判断弹题格式错误后自动重试，并按选项含义继续原视频', async (t) => {
+  const { runtime } = await boot(); t.after(() => runtime.close());
+  const session = await setupAdmin(runtime); const { owner, course } = await connected(runtime, session);
+  const judge = { ...question('popup'), kind: 'judge', options: [{ id: 'yes-id', text: '对' }, { id: 'no-id', text: '错' }] };
+  let generations = 0, steps = 0;
+  runtime.ai.generate = async () => { generations++; return generations === 1 ? '{"answer":"unknown"}' : '{"answer":"B"}'; };
+  runtime.manager.studyStep = async (_owner, _platform, _course, _unit, _checkpoint, options) => {
+    steps++;
+    if (steps === 1) return { status: 'needs_ai', questions: [judge], checkpoint: { position: 30 } };
+    assert.deepEqual(options.interaction_answers, { popup: ['false'] });
+    return { status: 'completed' };
+  };
+  const task = runtime.jobs.create(owner, { platform: 'sim', course, unit_ids: ['1001-u1'], operation: 'study' });
+  await waitFor(runtime, session, task.id, 'completed');
+  assert.equal(generations, 2); assert.equal(steps, 2);
+  const state = runtime.jobs.details(owner, task.id).workflow as any;
+  assert.equal(state.phase, 'answered');
+  assert.equal(state.model_diagnostics[0].raw, '{"answer":"unknown"}');
 });
 
 test('交卷结果未知时回读而不重发，人工回读也保存确认记录', async (t) => {

@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { boot,call,setupAdmin,waitFor } from './support/harness.ts';
 import type { JobInput, TaskRow } from '../src/jobs/engine.ts';
 import { AUTO_SUBMISSION_UNCONFIRMED } from '../src/jobs/workflows.ts';
+import { digest } from '../src/core/domain.ts';
 
 const moduleDir=fileURLToPath(new URL('../../courseflow-chaoxing/',import.meta.url));
 const python=process.env.CF_CX_PYTHON??'/usr/bin/python3';
@@ -152,6 +153,7 @@ const submissionCases = [
   ['lost', '提交响应丢失后自动核对并接续'],
   ['legacy', '升级后恢复旧任务并补交仍未提交的同一份答卷'],
   ['unconfirmed', '交卷待确认时继续可学内容并保留原答卷'],
+  ['already-submitted', '页面确认旧答卷已交卷后跳过草稿及重复交卷'],
 ] as const;
 for (const [scenario, title] of submissionCases) {
   test(`超星前置测验${title}`, {skip:!available,timeout:55_000}, async t => {
@@ -166,6 +168,7 @@ for (const [scenario, title] of submissionCases) {
     let taskId='';
     const legacy=scenario==='legacy';
     const unconfirmed=scenario==='unconfirmed';
+    const alreadySubmitted=scenario==='already-submitted';
     let chapterTwoUnlocked=false;
     let platformConfirmed=false;
     const chapterTwoOpen=()=>unconfirmed?chapterTwoUnlocked:submitted;
@@ -190,8 +193,9 @@ for (const [scenario, title] of submissionCases) {
           return Response.json({data:submitted?[]:[{jobid:'work-11',workAnswerId:'66',status:'已保存'}]});
         case '/api/phone/jobfinishedList': {
           if(url.searchParams.get('jobid')==='work-11') {
-            steps.push('readback');
-            if ((legacy||unconfirmed) && steps.filter(step=>step==='readback').length===1) {
+            // Read-only preflight also checks fresh sheets before any draft/submission.
+            steps.push(submitCount ? 'readback' : 'preflight');
+            if ((legacy||unconfirmed) && steps.filter(step=>step==='readback').length===1 && submitCount) {
               const row=runtime.db.get<TaskRow>('SELECT * FROM tasks WHERE id=?1', taskId)!;
               runtime.jobs.pause(row.owner, taskId);
             }
@@ -218,8 +222,9 @@ for (const [scenario, title] of submissionCases) {
           assert.equal(url.searchParams.get('jobid'),'work-11','只打开前序任务点测验');
           assert.ok(steps.includes('document-1'),'先完成前置章节的学习单元');
           steps.push('open');
+          if(alreadySubmitted) submitted=true;
           const question=(id:string,title:string)=>`<div class="singleQuesId" data="${id}"><div class="TiMu" data="0"><div class="Zy_TItle">${title}</div><ul><li aria-label="A. 1"></li><li aria-label="B. 2"></li></ul></div></div>`;
-          return new Response('<form action="/mooc-ans/work/addStudentWorkNew"><input name="workId" value="11"><input name="workAnswerId" value="66"><input name="answerold" value="A">'+question('old','原有答案')+question('new','1+1=?')+'</form>');
+          return new Response('<form action="/mooc-ans/work/addStudentWorkNew">'+(alreadySubmitted?'<input name="stuStatus" value="4">':'')+'<input name="workId" value="11"><input name="workAnswerId" value="66"><input name="answerold" value="A">'+question('old','原有答案')+question('new','1+1=?')+'</form>');
         }
         case '/mooc-ans/work/addStudentWorkNew': {
           const form=new URLSearchParams(String(init.body));
@@ -289,10 +294,100 @@ for (const [scenario, title] of submissionCases) {
     const details=(await call(runtime,{url:taskUrl,session})).body;
     assert.equal(details.workflow.records.length,1);
     assert.equal(details.workflow.records[0].paper.id,'work-11');
-    assert.deepEqual(steps.filter(step=>step!=='readback'),['document-1','open','model','draft','submit',...(legacy?['submit']:[]),...documentOrder]);
-    assert.equal(submitCount,legacy?2:1);
-    assert.ok(steps.indexOf('readback')>steps.indexOf('submit'));
+    assert.deepEqual(steps.filter(step=>step!=='readback'&&step!=='preflight'),['document-1','open',...(alreadySubmitted?[]:['model','draft','submit']),...(legacy?['submit']:[]),...documentOrder]);
+    assert.equal(submitCount,alreadySubmitted?0:legacy?2:1);
+    if(!alreadySubmitted) assert.ok(steps.indexOf('readback')>steps.indexOf('submit'));
     if (legacy||unconfirmed) assert.ok(details.events.some((event:{kind:string})=>event.kind==='submission_recovery'));
-    assert.equal(runtime.db.get<{state:string}>('SELECT state FROM operation_locks WHERE task_id=?1',id)?.state,'confirmed');
+    assert.equal(runtime.db.get<{state:string}>('SELECT state FROM operation_locks WHERE task_id=?1',id)?.state,alreadySubmitted?undefined:'confirmed');
   });
 }
+
+test('超星当前答卷与历史交卷冲突时，保留历史锁并按官方草稿正常通过前置测验', {skip:!available,timeout:35_000}, async t => {
+  const {runtime}=await boot('courseflow-cx-reconciled-quiz-');t.after(()=>runtime.close());
+  runtime.manager.install(moduleDir);runtime.manager.configure('cx',{source:'live',python});
+  const session=await setupAdmin(runtime);
+  const owner=(await call(runtime,{url:'/api/me',session})).body.user.id;
+  runtime.sessions.save(owner,'cx',{cookies:[],token:'',display_name:'合成用户',account_raw:'7',connected_at:1,session_id:'synthetic-connection'});
+  const course={id:'11',recruit_id:'22',name:'合成课程',kind:'chaoxing',outline_available:true};
+  const paper={id:'work-55',name:'合成前置测验'};
+  const attempt={id:'66',paper_id:paper.id,name:paper.name,questions:[],expires_at:null};
+  const historical={paper,attempt,confirmed:true,score:null};
+  const original={attempt,job:paper.id,form:{workRelationId:'55'},submit_intent:true,submitted_ack:true,submission_confirmed:true};
+  const saveState=(key:string)=>{
+    const namespace='cx-v1',sealed=runtime.vault.sealJson(owner,`module/cx/${digest(owner).slice(0,16)}/${namespace}/${key}`,original);
+    runtime.db.run('INSERT INTO module_state(module,owner,namespace,state_key,sealed,updated_at) VALUES(\'cx\',?1,?2,?3,?4,1)',owner,namespace,key,sealed);
+  };
+  saveState('attempt:11/22:66');saveState('paper:11/22:work-55');
+  const stateBytes=()=>runtime.db.all('SELECT state_key,hex(sealed) AS sealed FROM module_state WHERE state_key IN (\'attempt:11/22:66\',\'paper:11/22:work-55\') ORDER BY state_key');
+  const historicalBytes=stateBytes();
+  const task=runtime.jobs.create(owner,{platform:'cx',course,unit_ids:['locked:2'],operation:'study',options:{auto_prerequisite_quizzes:true}});
+  runtime.jobs.pause(owner,task.id);
+  const checkpoint={completed:[],positions:{},prerequisite_quizzes:{completed:[paper.id],records:[historical]}};
+  runtime.db.run('UPDATE tasks SET checkpoint=?1 WHERE id=?2',runtime.vault.sealJson(owner,`job/${task.id}`,checkpoint),task.id);
+  const resource=digest(JSON.stringify([runtime.manager.accountKey(owner,'cx'),'cx','11/22',paper.id]));
+  const oldLock=digest(JSON.stringify([resource,attempt.id,'']));
+  runtime.db.run("INSERT INTO operation_locks(id,owner,platform,task_id,state,created_at,resource) VALUES(?1,?2,'cx',?3,'confirmed',1,?4)",oldLock,owner,task.id,resource);
+  const oldLockRow=runtime.db.get('SELECT * FROM operation_locks WHERE id=?1',oldLock);
+
+  const fields={workAnswerId:'66',answerId:'66',courseId:'11',classId:'22',cpi:'33',knowledgeid:'1',jobid:paper.id};
+  const hidden=Object.entries(fields).map(([name,value])=>`<input type="hidden" name="${name}" value="${value}">`).join('');
+  let canProveDraft=false,saved=false,submitted=false;
+  const steps:string[]=[];
+  t.mock.method(runtime.ai,'generate',async (_owner:string,prompt:string)=>{assert.match(prompt,/1\+1/);steps.push('model');return '{"answer":"B"}';});
+  t.mock.method(globalThis,'fetch',async (input:URL, init:RequestInit)=>{
+    const url=new URL(input);
+    switch(url.pathname){
+      case '/mooc2-ans/visit/interaction': return new Response('');
+      case '/mooc2-ans/visit/courselistdata': return new Response('<div class="course"><a href="/a?cpi=33"></a><input class="courseId" value="11"><input class="clazzId" value="22"><span class="course-name">合成课程</span></div>');
+      case '/mooc2-ans/mycourse/studentcourse': return new Response(`<div id="cur1"><a class="clicktitle">Chapter 1</a>${submitted?'<span class="bntHoverTips">已完成</span>':''}</div><div id="cur2"><a class="clicktitle">Chapter 2</a>${submitted?'':'<span class="bntHoverTips">需完成之前任务点才能解锁</span>'}</div>`);
+      case '/gas/clazz':
+      case '/api/phone/jobunfinishedList': return new Response('',{status:500});
+      case '/api/phone/jobfinishedList': return Response.json({result:0,errorMsg:'无效的用户'});
+      case '/mooc-ans/knowledge/cards': {
+        if(url.searchParams.get('num')!=='0') return new Response('');
+        const first=url.searchParams.get('knowledgeid')==='1';
+        assert.ok(first||submitted);
+        return new Response('mArg='+JSON.stringify({attachments:first?[{type:'document',jobid:'doc-1',isPassed:true},{type:'workid',jobid:paper.id,job:true,property:{title:paper.name}}]:[{type:'document',jobid:'doc-2'}]})+';');
+      }
+      case '/mooc-ans/api/work':
+        assert.equal(init.method,'GET');assert.equal(url.searchParams.get('jobid'),paper.id);
+        steps.push(submitted?'graded':'probe');
+        if(submitted) return new Response(`<title>查看已批阅作业</title><form id="questionErrorForm1">${hidden}<span class="achievement">本次成绩<i>100</i>分</span></form>`);
+        return new Response(`<form id="form1" method="post" action="addStudentWorkNewWeb?token=current">${hidden}${canProveDraft?'<input id="addTimes" value="0">':''}<input id="limitWorkSubmitTimes" value="100"><input name="workRelationId" value="55"><input name="totalQuestionNum" value="synthetic-opaque-count-token"><input name="enc_work" value="current"><a class="btnSubmit" onclick="btnBlueSubmit();">提交</a><input name="answerq1" value="${saved?'B':''}"><div class="singleQuesId" data="q1"><div class="TiMu" data="0"><div class="Zy_TItle">1+1=?</div><ul><li aria-label="A. 1"></li><li aria-label="B. 2"></li></ul></div></div></form>`);
+      case '/mooc-ans/work/validate': return Response.json({status:3});
+      case '/mooc-ans/work/isExpire': return Response.json({status:0,standardEnc:'current'});
+      case '/mooc-ans/work/addStudentWorkNew':
+      case '/mooc-ans/work/addStudentWorkNewWeb': {
+        const form=new URLSearchParams(String(init.body));
+        assert.equal(form.get('workAnswerId'),'66');assert.equal(form.get('answerq1'),'B');
+        assert.equal(submitted,false);
+        if(url.searchParams.has('tempsave')) {
+          assert.equal(saved,false);assert.equal(form.get('pyFlag'),'1');assert.equal(url.searchParams.get('totalQuestionNum'),'synthetic-opaque-count-token');
+          steps.push('draft');saved=true;return Response.json({status:true});
+        }
+        assert.ok(saved);assert.equal(form.get('pyFlag'),'');assert.equal(url.searchParams.get('saveStatus'),'1');
+        steps.push('submit');submitted=true;return Response.json({status:true,stuStatus:4});
+      }
+      case '/mooc-ans/job/document': assert.ok(submitted);steps.push('doc-2');return Response.json({status:true});
+      default: assert.fail('Unexpected test endpoint: '+url.pathname);
+    }
+  });
+  const resume=async()=>assert.equal((await call(runtime,{method:'POST',url:'/api/tasks/'+task.id+'/resume',session})).status,200);
+  await resume();
+  const blocked=await waitFor(runtime,session,task.id,'paused');
+  assert.match(blocked.detail,/未确认同一答卷当前可提交/);
+  assert.deepEqual(steps,['probe']);
+  assert.equal(runtime.db.get<{n:number}>('SELECT count(*) n FROM write_ledger')?.n,0);
+  canProveDraft=true;
+  await resume();
+  const completed=await waitFor(runtime,session,task.id,'completed');
+  assert.deepEqual(completed.completed,['doc-2']);
+  assert.deepEqual(steps,['probe','probe','model','probe','draft','probe','submit','graded','doc-2']);
+  const {workflow}=runtime.jobs.details(owner,task.id) as any;
+  assert.deepEqual(workflow.records[0],historical);
+  assert.equal(workflow.records[1].attempt.id,'66');assert.equal(workflow.records[1].score,100);
+  assert.equal(workflow.records[1].reconciled,true);
+  assert.deepEqual(stateBytes(),historicalBytes);
+  assert.deepEqual(runtime.db.get('SELECT * FROM operation_locks WHERE id=?1',oldLock),oldLockRow);
+  assert.equal(runtime.db.all("SELECT state FROM operation_locks WHERE state='confirmed'").length,2);
+});

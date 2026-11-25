@@ -1,4 +1,4 @@
-import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -19,8 +19,7 @@ export type RuntimeConfig = {
 export type Config = RuntimeConfig & HttpConfig;
 
 function defaultDataDir(): string {
-  if (process.env.XDG_DATA_HOME) return path.join(process.env.XDG_DATA_HOME, 'courseflow');
-  return path.join(homedir(), '.local', 'share', 'courseflow');
+  return fileURLToPath(new URL('../../../local/data/', import.meta.url));
 }
 
 function parseOrigin(value: string): string {

@@ -44,7 +44,7 @@ npm test
 | --- | --- | --- |
 | `CF_BIND` | `127.0.0.1:8099` | HTTP 监听地址 |
 | `CF_PUBLIC_URL` | 与监听地址对应的本机源地址 | Cookie、来源校验和导出链接使用的完整源地址，不含路径 |
-| `CF_DATA_DIR` | `$XDG_DATA_HOME/courseflow` 或 `~/.local/share/courseflow` | 数据库、密钥、已安装模块和浏览器临时资料，放在源码外 |
+| `CF_DATA_DIR` | `源码仓库相邻的 local/data 目录` | 数据库、密钥、已安装模块和浏览器临时资料，放在源码仓库外、统一工作区内 |
 | `CF_CHROMIUM` | `/usr/bin/chromium` | 官方页面与播放器使用的 Chromium 可执行文件 |
 | `CF_CAPTCHA_URL` | 未设置 | 本地验证码识别后端，见[部署与调用说明](docs/CAPTCHA.md) |
 | `CF_CAPTCHA_TIMEOUT_MS` | `10000` | 验证码排队、识别及响应的总超时，最高 20000 毫秒 |
@@ -114,7 +114,7 @@ Framework 0.1.13 起，模块可声明 `permissions.captcha: true`，通过 `cw.
 - `runtime.engine` 为 `node` 或 `binary`；`runtime.entry` 与 `runtime.files` 只能是模块目录内的相对路径。
 - `permissions.network` 是精确主机或 `*.` 子域，不是 URL；根域与子域需要分别声明。
 - `presentation` 的 `when` 只支持 `course.kind`、`course.family` 的字符串相等，由框架求值；界面不做平台判断。
-- 可选 `keepalive_seconds`（≥ 60）让框架定期调用 `auth.keepalive`，模块只能刷新登录状态，不发学习写入。
+- 可选 `keepalive_seconds`（≥ 60）让框架定期调用 `auth.keepalive`，模块只能刷新登录状态，不发学习写入。北京时间 23:00–07:00 全局停止后台保活，适用于所有用户和团队绑定账号，不受个人夜间暂停设置或临时覆盖影响；07:00 后按原间隔恢复。
 
 ### 宿主服务
 

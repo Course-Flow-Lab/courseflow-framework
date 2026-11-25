@@ -22,7 +22,7 @@ const HELP = `Courseflow framework ${VERSION}
 配置（环境变量）：
   CF_BIND         127.0.0.1:8099
   CF_PUBLIC_URL   http://127.0.0.1:8099
-  CF_DATA_DIR     $XDG_DATA_HOME/courseflow 或 ~/.local/share/courseflow
+  CF_DATA_DIR     源码仓库相邻的 local/data 目录
   CF_LOG          info | debug | warn | error
 
 首次启动会在终端打印一次性管理员设置码。运行数据必须放在源码目录之外。`;

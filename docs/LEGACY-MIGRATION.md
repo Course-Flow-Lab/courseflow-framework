@@ -10,13 +10,13 @@
 # 只读预检，不创建目标目录，不打印账号或模型凭据
 npm run cli -- migrate legacy \
   --source /旧备份/oldsite-data \
-  --destination "$HOME/.local/share/courseflow-imported" \
+  --destination "$HOME/workspace/courseflow/local/imported-data" \
   --key-file /私有目录/oldsite-secret.key --dry-run
 
 # 去掉 --dry-run 后导入，仍不修改来源
 npm run cli -- migrate legacy \
   --source /旧备份/oldsite-data \
-  --destination "$HOME/.local/share/courseflow-imported" \
+  --destination "$HOME/workspace/courseflow/local/imported-data" \
   --key-file /私有目录/oldsite-secret.key
 ```
 
@@ -29,7 +29,7 @@ npm run cli -- migrate legacy \
 ```sh
 npm run cli -- migrate legacy \
   --source /旧本机配置目录 \
-  --destination "$HOME/.local/share/courseflow-imported" \
+  --destination "$HOME/workspace/courseflow/local/imported-data" \
   --username 管理员用户名 --password-file /私有目录/新站点密码
 ```
 
@@ -54,7 +54,7 @@ npm run cli -- migrate legacy \
 成功后目标内有 `migration-report.json`，只含统计与处理方式。在单独的本机端口启动新站点检查：
 
 ```sh
-CF_DATA_DIR="$HOME/.local/share/courseflow-imported" \
+CF_DATA_DIR="$HOME/workspace/courseflow/local/imported-data" \
 CF_BIND=127.0.0.1:8101 CF_PUBLIC_URL=http://127.0.0.1:8101 npm start
 ```
 

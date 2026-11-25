@@ -2,7 +2,7 @@ import type { Db } from '../core/db.ts';
 import type { Course, Attempt, Paper, Question } from '../modules/protocol.ts';
 import type { ModuleManager } from '../modules/manager.ts';
 import type { AiService } from '../services/ai.ts';
-import { AnswerMemory, validAnswer, parseModelAnswer, questionPrompt, ANSWER_SYSTEM } from '../services/answers.ts';
+import { AnswerMemory, validAnswer, generateModelAnswer, ANSWER_SYSTEM, type ModelAnswerFailure } from '../services/answers.ts';
 import { digest, nowSeconds, randomId, sleep } from '../core/domain.ts';
 import type { TaskRow, Checkpoint, JobInput } from './engine.ts';
 import { conflict } from '../core/errors.ts';
@@ -19,7 +19,9 @@ type AnswerState = {
   phase: string; index: number; round: number; cursor: number; attempt?: Attempt; paper?: Paper;
   answers: Record<string, string[]>; explanations: Record<string, string>; preserve: string[];
   confirmed?: boolean; nonce?: string; lock?: string; readbacks?: number; submit_retried?: boolean; remaining?: number;
+  reconcile_attempt_id?: string;
   records: Array<Record<string, unknown>>;
+  model_diagnostics?: Array<ModelAnswerFailure & { question_id: string; created_at: number }>;
 };
 export const LEGACY_SUBMISSION_UNCONFIRMED = '平台尚未确认本次交卷，请稍后使用“回读提交结果”；不会自动重交';
 export const AUTO_SUBMISSION_UNCONFIRMED = '超星尚未确认原答卷的交卷状态。继续任务可再次核对。';
@@ -51,7 +53,7 @@ function newAnswerState(): AnswerState {
   return { phase: 'new', index: 0, round: 0, cursor: 0, answers: {}, explanations: {}, preserve: [], records: [] };
 }
 
-async function runAnswerWorkflow(c: WorkflowContext, prerequisite?: Paper): Promise<'unconfirmed' | void> {
+async function runAnswerWorkflow(c: WorkflowContext, prerequisite?: Paper): Promise<'unconfirmed' | 'unchanged' | void> {
   let pending = false;
   const timer = setInterval(() => {
     const attempt = c.checkpoint.workflow?.attempt;
@@ -65,10 +67,10 @@ async function runAnswerWorkflow(c: WorkflowContext, prerequisite?: Paper): Prom
   try { return await answer(c, prerequisite); } finally { clearInterval(timer); }
 }
 
-export async function runPrerequisiteQuiz(c: WorkflowContext, paper: Paper): Promise<'completed' | 'unconfirmed' | 'paused'> {
+export async function runPrerequisiteQuiz(c: WorkflowContext, paper: Paper, reconcileAttemptId?: string): Promise<'completed' | 'unconfirmed' | 'paused'> {
   const state: AnswerState = c.checkpoint.workflow?.kind === 'prerequisite_quiz'
     ? c.checkpoint.workflow
-    : { ...newAnswerState(), kind: 'prerequisite_quiz', paper };
+    : { ...newAnswerState(), kind: 'prerequisite_quiz', paper, reconcile_attempt_id: reconcileAttemptId };
   c.checkpoint.workflow = state;
   const result = await runAnswerWorkflow({
     ...c,
@@ -76,11 +78,13 @@ export async function runPrerequisiteQuiz(c: WorkflowContext, paper: Paper): Pro
     input: { ...c.input, options: { ...c.input.options, use_ai: true, auto_submit: true, redo: false } },
   }, paper);
   if (result === 'unconfirmed') return result;
-  if (state.index === 0) return 'paused';
+  if (state.index === 0 && result !== 'unchanged') return 'paused';
   c.check();
-  const history = c.checkpoint.prerequisite_quizzes ??= { completed: [], records: [] };
-  history.completed.push(paper.id);
-  history.records.push(...state.records);
+  if (result !== 'unchanged') {
+    const history = c.checkpoint.prerequisite_quizzes ??= { completed: [], records: [] };
+    if (!history.completed.includes(paper.id)) history.completed.push(paper.id);
+    history.records.push(...state.records);
+  }
   delete c.checkpoint.workflow;
   c.save();
   return 'completed';
@@ -187,12 +191,14 @@ async function answer(c: WorkflowContext, prerequisite?: Paper) {
   const autoRecover = autoChaoxingSubmission(c.task, c.input, c.checkpoint);
   if (autoRecover) state.readbacks = 0;
   const courseKey = `${c.course.id}/${c.course.recruit_id}`;
+  const reconciled = state.reconcile_attempt_id ? { reconciled: true } : {};
   const save = () => { c.check(); c.save(); };
   const submit = async (lock: string, retry = false): Promise<boolean> => {
     try {
       await call(c, 'exam.write', {
         attempt_id: state.attempt!.id, answers: state.answers, phase: 'submit',
-        ...(retry ? { retry: true, preserve_ids: state.preserve } : {}),
+        ...reconciled, ...(retry ? { retry: true } : {}),
+        ...(retry || state.reconcile_attempt_id ? { preserve_ids: state.preserve } : {}),
       });
     } catch (error) {
       c.db.run("UPDATE operation_locks SET state='unknown' WHERE id=?1", lock);
@@ -217,6 +223,7 @@ async function answer(c: WorkflowContext, prerequisite?: Paper) {
       for (const q of state.attempt!.questions) q.images = (q.images ?? []).map((url) => c.manager.registerImage(c.platformOwner, c.task.platform, url));
       state.answers = {}; state.explanations = {}; state.preserve = []; state.cursor = 0; state.confirmed = false; state.phase = 'answers';
       delete state.submit_retried;
+      delete state.model_diagnostics;
       for (const q of state.attempt!.questions) {
         if (validAnswer(q, q.correct_answer)) c.memory.remember(c.task.owner, c.task.platform, courseKey, q, q.correct_answer);
         if (validAnswer(q, q.answer)) { state.answers[q.id] = q.answer; state.preserve.push(q.id); }
@@ -241,21 +248,55 @@ async function answer(c: WorkflowContext, prerequisite?: Paper) {
       const resource = digest(JSON.stringify([c.input.account, c.task.platform, courseKey, paper.id]));
       const unknown = c.db.get('SELECT 1 FROM operation_locks WHERE resource=?1 AND state IN (\'pending\',\'unknown\')', resource);
       if (unknown) { c.pause('这份试卷存在尚未核对的交卷请求，请先对原任务回读结果'); return; }
-      state.paper = paper; state.phase = c.input.options.redo ? 'resetting' : 'opening'; state.nonce = c.input.options.redo ? randomId() : '';
-      save();
-      let opened;
-      try { opened = await call(c, c.input.options.redo ? 'exam.redo' : 'exam.open', { paper_id: paper.id, request_id: `${c.task.id}/${state.round}` }); }
-      catch (error) {
-        if (mastery && (error as any).code === 'no_questions') { c.checkpoint.completed.push(paper.id); state.index++; state.phase = 'new'; c.event('skipped', '知识点暂无练习题，已跳过'); save(); continue; }
-        throw error;
+      state.paper = paper;
+      if (state.reconcile_attempt_id) {
+        // This probe is read-only; persist the workflow only once we have the exact draft.
+        let live;
+        try {
+          live = await call(c, 'exam.reconcile', { paper_id: paper.id, attempt_id: state.reconcile_attempt_id });
+        } catch (error) {
+          if ((error as { code?: string }).code !== 'unsupported_operation') throw error;
+          c.pause('当前超星模块不能核对历史交卷与现有答卷状态，请更新模块或到官方页面查看'); return;
+        }
+        if (live.status === 'submitted') return 'unchanged';
+        if (live.status !== 'draft' || live.ready !== true || live.attempt?.id !== state.reconcile_attempt_id || live.attempt?.paper_id !== paper.id) {
+          c.pause(live.status === 'below_pass' ? `${paper.name}：官方显示未达到通过线，请在官方页面处理` :
+            `${paper.name}：历史有交卷记录，超星未确认同一答卷当前可提交。请在官方页面核对后继续`);
+          return;
+        }
+        // Fixed per resource and official sheet: restart cannot create another
+        // lock or reuse the lock from the historical submission.
+        state.nonce = 'cx-current-draft-v1';
+        if (!await acceptOpened(live)) return;
+        c.event('quiz_reconciled', `超星确认原答卷当前可作答：${paper.name}（保留历史交卷记录）`);
+      } else {
+        state.phase = c.input.options.redo ? 'resetting' : 'opening'; state.nonce = c.input.options.redo ? randomId() : '';
+        save();
+        let opened;
+        try { opened = await call(c, c.input.options.redo ? 'exam.redo' : 'exam.open', { paper_id: paper.id, request_id: `${c.task.id}/${state.round}` }); }
+        catch (error) {
+          if (mastery && (error as any).code === 'no_questions') { c.checkpoint.completed.push(paper.id); state.index++; state.phase = 'new'; c.event('skipped', '知识点暂无练习题，已跳过'); save(); continue; }
+          throw error;
+        }
+        if (!await acceptOpened(opened)) return;
       }
-      if (!await acceptOpened(opened)) return;
     }
     if (state.phase==='reading') {
       const opened=await call(c,'exam.open',{paper_id:state.paper!.id,request_id:`${c.task.id}/${state.round}`,continuation:true});
       if (!await acceptOpened(opened)) return;
     }
     const attempt = state.attempt!;
+    // Chaoxing can return a cached answer sheet submitted by an earlier task even
+    // when its directory still lists the quiz as unfinished. Reconcile before any
+    // answer generation or draft write, including legacy checkpoints paused in
+    // draft. Only a confirmed readback for this exact attempt may skip editing;
+    // use the normal readback path to retain reports and prerequisite bookkeeping.
+    if (c.task.platform === 'cx' && ['answers', 'waiting_answers', 'draft', 'waiting_submit'].includes(state.phase)) {
+      const result = await call(c, 'exam.readback', { attempt_id: attempt.id, ...reconciled });
+      if (result.confirmed === true && result.attempt_id === attempt.id) {
+        state.phase = 'readback'; state.readbacks = 0; save();
+      }
+    }
     if (attempt.expires_at != null && attempt.expires_at <= nowSeconds() && !['submitting', 'readback', 'next'].includes(state.phase)) { c.pause('本次作答已经截止，后续仅可回读或导出'); return; }
     if (['answers', 'waiting_answers'].includes(state.phase)) {
       state.phase = 'answers'; save();
@@ -266,9 +307,16 @@ async function answer(c: WorkflowContext, prerequisite?: Paper) {
         try {
           const images = await Promise.all((question.images ?? []).slice(0, 8).map((url) => c.manager.image(c.platformOwner, c.task.platform, url)));
           c.check();
-          const generated = await c.ai.generate(c.task.owner, questionPrompt(question), { modelId: c.input.options.model_id as string | undefined, system: ANSWER_SYSTEM, images, signal: c.signal });
-          c.check();
-          const result = parseModelAnswer(question, generated);
+          const result = await generateModelAnswer(question,
+            prompt => c.ai.generate(c.task.owner, prompt, { modelId: c.input.options.model_id as string | undefined, system: ANSWER_SYSTEM, images, signal: c.signal }), {
+              check: c.check,
+              onFailure: failure => {
+                c.check();
+                state.model_diagnostics = [...(state.model_diagnostics ?? []), { ...failure, question_id: question.id, created_at: nowSeconds() }].slice(-10);
+                save();
+                if (failure.retrying) c.event('model_answer_retry', `第 ${attempt.questions.indexOf(question) + 1} / ${attempt.questions.length} 题模型答案格式不符，正在重试一次`);
+              },
+            });
           state.answers[question.id] = result.answer; state.explanations[question.id] = result.explanation; save();
         } catch (error) {
           c.check(); state.phase = 'waiting_answers'; save(); c.pause(`需要补答：第 ${attempt.questions.indexOf(question) + 1} / ${attempt.questions.length} 题：${(error as Error).message}`); return;
@@ -279,11 +327,14 @@ async function answer(c: WorkflowContext, prerequisite?: Paper) {
     if (state.phase === 'draft') {
       while (true) {
         c.update(`正在保存草稿：${attempt.name}`);
-        const result = await call(c, 'exam.write', { attempt_id: attempt.id, answers: state.answers, preserve_ids: state.preserve, phase: 'draft', cursor: state.cursor });
-        state.cursor = Number(result.cursor); save();
-        if (result.done) break;
+        const result = await call(c, 'exam.write', { attempt_id: attempt.id, answers: state.answers, preserve_ids: state.preserve, phase: 'draft', cursor: state.cursor, ...reconciled });
+        state.cursor = Number(result.cursor);
+        if (result.done) {
+          state.phase = state.reconcile_attempt_id && result.confirmed === true && result.attempt_id === attempt.id ? 'readback' : 'waiting_submit';
+          save(); break;
+        }
+        save();
       }
-      state.phase = 'waiting_submit'; save();
     }
     if (state.phase === 'waiting_submit') {
       if (!state.confirmed && c.input.options.auto_submit !== true) { c.pause(mastery ? '练习答案已生成，平台不支持草稿，请检查并确认提交' : '草稿已保存，请检查答案并确认本次交卷'); return; }
@@ -303,10 +354,10 @@ async function answer(c: WorkflowContext, prerequisite?: Paper) {
     if (state.phase === 'submitting') { state.phase = 'readback'; save(); }
     if (state.phase === 'readback') {
       c.update(`正在回读交卷结果：${attempt.name}`);
-      const canRetry = autoRecover && !state.submit_retried && (attempt.expires_at == null || attempt.expires_at > nowSeconds());
+      const canRetry = autoRecover && !state.reconcile_attempt_id && !state.submit_retried && (attempt.expires_at == null || attempt.expires_at > nowSeconds());
       let result;
       try {
-        result = await call(c, 'exam.readback', { attempt_id: attempt.id, ...(canRetry && (state.readbacks ?? 0) >= 5 ? { check_retry: true } : {}) });
+        result = await call(c, 'exam.readback', { attempt_id: attempt.id, ...reconciled, ...(canRetry && (state.readbacks ?? 0) >= 5 ? { check_retry: true } : {}) });
       } catch (error) {
         const code = (error as { code?: string }).code ?? '';
         if (!autoRecover || !['platform_unavailable', 'module_timeout'].includes(code)) throw error;
@@ -349,8 +400,9 @@ async function answer(c: WorkflowContext, prerequisite?: Paper) {
           if (validAnswer(q, reviewed.correct_answer)) c.memory.remember(c.task.owner, c.task.platform, courseKey, q, reviewed.correct_answer);
         }
       }
-      state.records.push({ paper: state.paper, attempt, answers: state.answers, explanations: state.explanations, score: result.score ?? null, confirmed: true, completed_at: nowSeconds() });
-      c.event('submission_confirmed', `平台已确认：${attempt.name}${result.score == null ? '' : ` · ${result.score} 分`}`);
+      state.records.push({ paper: state.paper, attempt, answers: state.answers, explanations: state.explanations, score: result.score ?? null,
+        confirmed: true, completed_at: nowSeconds(), ...reconciled, ...(result.passed === false ? { passed: false } : {}) });
+      c.event('submission_confirmed', `平台已确认：${attempt.name}${result.score == null ? '' : ` · ${result.score} 分`}${result.passed === false ? '（未达到通过线）' : ''}`);
       if (mastery && result.score != null && Number(result.score) < 100 && state.round < 2) {
         state.round++; state.phase = 'new'; save(); continue;
       }

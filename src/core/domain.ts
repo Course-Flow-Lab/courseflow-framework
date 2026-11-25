@@ -26,6 +26,12 @@ export function setQuietOverride(until: number | null): void {
   quietOverrideUntil = until;
 }
 
+/** Fixed UTC+8 night window, independent of user preferences and development overrides. */
+export function isOvernight(now = nowSeconds()): boolean {
+  const second = (((now + 8 * 3600) % 86400) + 86400) % 86400;
+  return second < 7 * 3600 || second >= 23 * 3600;
+}
+
 /** Fixed UTC+8, pause from 23:00 (inclusive) to 07:00 (exclusive). Host timezone independent. */
 export function quietStatus(now: number, enabled = true): {
   enabled: boolean;
@@ -44,8 +50,7 @@ export function quietStatus(now: number, enabled = true): {
   else boundary = day + 86400 + 7 * 3600;
   return {
     enabled,
-    active: enabled &&
-      !(second >= 7 * 3600 && second < 23 * 3600) &&
+    active: enabled && isOvernight(now) &&
       !(quietOverrideUntil !== null && now < quietOverrideUntil),
     timezone: 'Asia/Shanghai (UTC+8)',
     starts_at: '23:00',

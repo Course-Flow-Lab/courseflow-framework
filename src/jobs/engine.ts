@@ -8,7 +8,7 @@ import { badRequest, conflict, forbidden, notFound } from '../core/errors.ts';
 import { effectiveTaskPolicy } from '../core/task-policy.ts';
 import { preferences, quietFor } from '../core/preferences.ts';
 import type { AiService } from '../services/ai.ts';
-import { AnswerMemory, validAnswer, ANSWER_SYSTEM, questionPrompt, parseModelAnswer } from '../services/answers.ts';
+import { AnswerMemory, validAnswer, ANSWER_SYSTEM, generateModelAnswer } from '../services/answers.ts';
 import { AUTO_SUBMISSION_UNCONFIRMED, autoChaoxingSubmission, LEGACY_SUBMISSION_UNCONFIRMED, runPrerequisiteQuiz, runWorkflow, type WorkflowContext } from './workflows.ts';
 import { platformOwner, taskPlatformOwner } from '../core/platform-accounts.ts';
 
@@ -196,7 +196,8 @@ export class JobEngine {
     const courses = await this.manager.courses(sessionOwner, row.platform);
     const course = courses.find((c) => c.id === row.course_id && c.recruit_id === row.recruit_id);
     if (!course) throw notFound('找不到原课程');
-    const result = await this.manager.invoke(sessionOwner, row.platform, 'exam.readback', { course, attempt_id: workflow.attempt.id });
+    const reconciled = workflow.reconcile_attempt_id === workflow.attempt.id ? { reconciled: true } : {};
+    const result = await this.manager.invoke(sessionOwner, row.platform, 'exam.readback', { course, attempt_id: workflow.attempt.id, ...reconciled });
     if (!result.confirmed || result.attempt_id !== workflow.attempt.id) throw conflict('submission_unknown', '平台仍未确认本次作答，不会重新提交');
     const latest = this.db.get<TaskRow>('SELECT * FROM tasks WHERE id=?1 AND owner=?2', id, owner);
     if (!latest || latest.generation !== row.generation || latest.state !== 'paused' ||
@@ -210,7 +211,8 @@ export class JobEngine {
       if (reviewed) { q.correct_answer = reviewed.correct_answer; q.explanation = reviewed.explanation; }
     }
     workflow.records ??= [];
-    if (!workflow.records.some((r: any) => r.attempt?.id === workflow.attempt.id)) workflow.records.push({ paper: workflow.paper, attempt: workflow.attempt, answers: workflow.answers, explanations: workflow.explanations, score: result.score ?? null, confirmed: true, completed_at: nowSeconds() });
+    if (!workflow.records.some((r: any) => r.attempt?.id === workflow.attempt.id)) workflow.records.push({ paper: workflow.paper, attempt: workflow.attempt, answers: workflow.answers, explanations: workflow.explanations, score: result.score ?? null,
+      confirmed: true, completed_at: nowSeconds(), ...reconciled, ...(result.passed === false ? { passed: false } : {}) });
     if (row.operation === 'mastery' && (result.score == null || Number(result.score) < 100)) workflow.remaining = (workflow.remaining ?? 0) + 1;
     workflow.phase = 'next';
     if (workflow.lock) this.db.run("UPDATE operation_locks SET state='confirmed' WHERE id=?1", workflow.lock);
@@ -650,8 +652,10 @@ export class JobEngine {
         return;
       }
       let submissionUnconfirmed = false;
-      const runQuiz = async (paper: Paper) => {
-        const result = await runPrerequisiteQuiz(workflowContext(), paper);
+      const checkedQuizzes = new Set<string>();
+      const runQuiz = async (paper: Paper, reconcileAttemptId?: string) => {
+        checkedQuizzes.add(paper.id);
+        const result = await runPrerequisiteQuiz(workflowContext(), paper, reconcileAttemptId);
         if (result === 'unconfirmed') {
           submissionUnconfirmed = true;
           this.event(taskId, 'submission_unconfirmed', '原答卷待确认，刷新超星目录并接续已开放的所选内容');
@@ -767,8 +771,9 @@ export class JobEngine {
               check();
               const quizzes = (result.papers as Paper[]).filter((paper): paper is Paper & { chapter_id: string; chapter_order: number } =>
                 paper.task_point === true && typeof paper.chapter_id === 'string' && typeof paper.chapter_order === 'number');
-              const confirmed = new Set(checkpoint.prerequisite_quizzes?.completed);
-              const waitingQuizzes = quizzes.filter(paper => !paper.done && !confirmed.has(paper.id));
+              // Historical submission confirmation is not current completion. Only
+              // the fresh catalog can mark a chapter's task points as finished.
+              const waitingQuizzes = quizzes.filter(paper => !paper.done);
               // An unlocked chapter may have only quizzes and therefore no ordinary units.
               const quizChapters = new Set(quizzes.map(paper => paper.chapter_id));
               const unfinishedQuizChapters = new Set(waitingQuizzes.map(paper => paper.chapter_id));
@@ -785,12 +790,24 @@ export class JobEngine {
               const unfinishedStudyChapters = new Set(units.filter(unit => unit.state !== 'completed' && !done.has(unit.id))
                 .map(unit => unit.chapter_id));
               const quiz = !submissionUnconfirmed && Number.isFinite(boundary)
-                ? waitingQuizzes.filter(paper => paper.available && paper.chapter_order < boundary && !unfinishedStudyChapters.has(paper.chapter_id))
+                ? waitingQuizzes.filter(paper => paper.available && !checkedQuizzes.has(paper.id) &&
+                    paper.chapter_order < boundary && !unfinishedStudyChapters.has(paper.chapter_id))
                   .sort((a, b) => a.chapter_order - b.chapter_order)[0]
                 : undefined;
               if (quiz) {
+                let reconcileAttemptId: string | undefined;
+                const history = checkpoint.prerequisite_quizzes;
+                if (history?.completed.includes(quiz.id)) {
+                  const record = history.records.findLast(r => r.confirmed === true && (r.paper as Paper | undefined)?.id === quiz.id);
+                  const attemptId = (record?.attempt as { id?: unknown } | undefined)?.id;
+                  if (typeof attemptId !== 'string' || !attemptId) {
+                    workflowContext().pause(`${quiz.name}：历史已经确认交卷，但缺少原答卷编号，不能自动重开。请在官方页面核对`);
+                    return;
+                  }
+                  reconcileAttemptId = attemptId;
+                }
                 this.event(taskId, 'prerequisite_quiz', `解锁前置测验：${quiz.name}`);
-                if (!await runQuiz(quiz)) return;
+                if (!await runQuiz(quiz, reconcileAttemptId)) return;
                 refresh = true;
                 refreshAttempts = 0;
                 continue;
@@ -855,9 +872,16 @@ export class JobEngine {
               for (const q of questions) {
                 if (validAnswer(q, answers[q.id])) continue;
                 const images = await Promise.all((q.images ?? []).map((url) => this.manager.image(sessionOwner, current.platform, url)));
-                const raw = await this.ai!.generate(current.owner, questionPrompt(q), { modelId: input.options.model_id as string | undefined, system: ANSWER_SYSTEM, images, signal: controller.signal });
-                if (controller.signal.aborted || !this.stillRunning(taskId, generation)) return;
-                answers[q.id] = parseModelAnswer(q, raw).answer;
+                const result = await generateModelAnswer(q,
+                  prompt => this.ai!.generate(current.owner, prompt, { modelId: input.options.model_id as string | undefined, system: ANSWER_SYSTEM, images, signal: controller.signal }), {
+                    check: () => { if (controller.signal.aborted || !this.stillRunning(taskId, generation)) throw new Error('任务已停止'); },
+                    onFailure: failure => {
+                      checkpoint.workflow.model_diagnostics = [...(checkpoint.workflow.model_diagnostics ?? []), { ...failure, question_id: q.id, created_at: nowSeconds() }].slice(-10);
+                      this.saveCheckpoint(taskId, current.owner, checkpoint);
+                      if (failure.retrying) this.event(taskId, 'model_answer_retry', '视频弹题模型答案格式不符，正在重试一次');
+                    },
+                  });
+                answers[q.id] = result.answer;
               }
               checkpoint.interactions ??= {}; checkpoint.interactions[unit.id] = answers; checkpoint.workflow.phase = 'answered';
               this.saveCheckpoint(taskId, current.owner, checkpoint); continue;

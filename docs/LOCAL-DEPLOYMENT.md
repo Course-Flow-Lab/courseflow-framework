@@ -4,9 +4,14 @@
 
 ## 目录与服务
 
-- 后端发布：`~/.local/share/courseflow-local/releases/`；`current` 指向当前版本。
-- 前端发布：`~/.local/share/courseflow-local/webui-releases/`；`webui-current` 指向当前版本。
-- 数据与主密钥：`~/.local/share/courseflow-local/data/`，前后端拆分不改变数据库版本 3。
+本机全部源码仓库、工作树、发布包、运行环境、数据和备份统一放在 `/path/to/workspace/`；根目录权限为 0700，密钥和私有配置为 0600。不要再在 `~/.local/share`、`~/.local/state`、`~/.cache` 或共享盘创建独立 Courseflow 目录。临时文件设置 `TMPDIR=/path/to/workspace/tmp`（使用时展开为绝对路径）。
+
+- 后端发布：`/path/to/workspace/local/releases/`；`current` 指向当前版本。
+- 前端发布：`/path/to/workspace/local/webui-releases/`；`webui-current` 指向当前版本。
+- 数据与主密钥：`源码仓库相邻的 local/data 目录/`，迁移路径不会更换数据库或主密钥。
+- 附加 Git 工作树：`/path/to/workspace/worktrees/`；移动后运行 `git worktree repair`。
+- 用户服务定义：`/path/to/workspace/services/systemd-user/`，标准用户 systemd 目录仅保留注册链接。
+- 历史诊断与备份：`/path/to/workspace/state/`；容器部署状态默认位于 `docker-state/`。
 - 后端服务：`courseflow-local.service`，设置 `CF_BIND=127.0.0.1:8101`、`CF_PUBLIC_URL=http://127.0.0.1:8100`，保留原 `CF_DATA_DIR`。
 - 网关服务：`courseflow-webui-local.service`，使用 WebUI 仓库的 `deploy/nginx.conf`。独立前缀目录下的 `html` 链接指向 `webui-current/dist`，不修改系统 Nginx 配置。
 - 日志仍写入私有数据目录，可从界面「日志导出」下载；首次设置码只在后端终端或用户服务日志中显示。
@@ -68,6 +73,8 @@ journalctl --user -u courseflow-local -u courseflow-webui-local -n 50 --no-pager
 模型服务在「模型与任务设置」中填写；连接检查会向你选择的服务发送简短请求。未配置模型也可在作业任务暂停后人工补答。
 
 该页的「启用夜间暂停（北京时间 23:00–07:00）」默认勾选。取消后保存，当前用户可以全天创建和运行任务；夜间策略暂停的任务会自动继续，人工暂停的任务仍需手动继续。其他用户的开关独立保存。
+
+后台登录保活采用独立的全局夜间限制：北京时间 23:00–07:00 对所有用户和团队绑定账号停止 `auth.keepalive`，即使个人关闭夜间暂停或设置了临时覆盖也不发送；07:00 后按模块声明的间隔恢复。此限制不改变用户主动登录、检查连接或已允许的任务行为。
 
 框架 0.1.2 与智慧树 0.3.1 修正了父域 Cookie 传入官方播放器时的作用范围，并等待短暂的登录跳转。升级后先刷新网页，再创建新的见面课任务；之前已结束且记录为人工处理的任务不会被改写。只有持续登录跳转或平台明确拒绝认证时才重新扫码。完整签到仍以平台回读和官方页面为准。
 
