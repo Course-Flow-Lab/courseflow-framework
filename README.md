@@ -44,7 +44,7 @@ npm test
 | --- | --- | --- |
 | `CF_BIND` | `127.0.0.1:8099` | HTTP 监听地址 |
 | `CF_PUBLIC_URL` | 与监听地址对应的本机源地址 | Cookie、来源校验和导出链接使用的完整源地址，不含路径 |
-| `CF_DATA_DIR` | `源码仓库相邻的 local/data 目录` | 数据库、密钥、已安装模块和浏览器临时资料，放在源码仓库外、统一工作区内 |
+| `CF_DATA_DIR` | 源码仓库相邻的 `local/data/` | 数据库、密钥、已安装模块和浏览器临时资料；可显式设置为其他私有目录 |
 | `CF_CHROMIUM` | `/usr/bin/chromium` | 官方页面与播放器使用的 Chromium 可执行文件 |
 | `CF_CAPTCHA_URL` | 未设置 | 本地验证码识别后端，见[部署与调用说明](docs/CAPTCHA.md) |
 | `CF_CAPTCHA_TIMEOUT_MS` | `10000` | 验证码排队、识别及响应的总超时，最高 20000 毫秒 |

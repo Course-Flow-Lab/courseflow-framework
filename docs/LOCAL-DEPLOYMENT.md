@@ -4,14 +4,11 @@
 
 ## 目录与服务
 
-本机全部源码仓库、工作树、发布包、运行环境、数据和备份统一放在 `/path/to/workspace/`；根目录权限为 0700，密钥和私有配置为 0600。不要再在 `~/.local/share`、`~/.local/state`、`~/.cache` 或共享盘创建独立 Courseflow 目录。临时文件设置 `TMPDIR=/path/to/workspace/tmp`（使用时展开为绝对路径）。
+部署根目录由使用者选择，须位于支持 Unix 权限的文件系统，目录为 0700，密钥和私有配置为 0600。以下路径均相对该部署根目录；服务配置使用展开后的绝对路径。
 
-- 后端发布：`/path/to/workspace/local/releases/`；`current` 指向当前版本。
-- 前端发布：`/path/to/workspace/local/webui-releases/`；`webui-current` 指向当前版本。
-- 数据与主密钥：`源码仓库相邻的 local/data 目录/`，迁移路径不会更换数据库或主密钥。
-- 附加 Git 工作树：`/path/to/workspace/worktrees/`；移动后运行 `git worktree repair`。
-- 用户服务定义：`/path/to/workspace/services/systemd-user/`，标准用户 systemd 目录仅保留注册链接。
-- 历史诊断与备份：`/path/to/workspace/state/`；容器部署状态默认位于 `docker-state/`。
+- 后端发布：`releases/`；`current` 指向当前版本。
+- 前端发布：`webui-releases/`；`webui-current` 指向当前版本。
+- 数据与主密钥：`data/`，通过 `CF_DATA_DIR` 显式设置；迁移路径不会更换数据库或主密钥。
 - 后端服务：`courseflow-local.service`，设置 `CF_BIND=127.0.0.1:8101`、`CF_PUBLIC_URL=http://127.0.0.1:8100`，保留原 `CF_DATA_DIR`。
 - 网关服务：`courseflow-webui-local.service`，使用 WebUI 仓库的 `deploy/nginx.conf`。独立前缀目录下的 `html` 链接指向 `webui-current/dist`，不修改系统 Nginx 配置。
 - 日志仍写入私有数据目录，可从界面「日志导出」下载；首次设置码只在后端终端或用户服务日志中显示。

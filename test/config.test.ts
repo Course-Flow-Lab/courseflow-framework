@@ -11,11 +11,14 @@ const configModule = fileURLToPath(new URL('../src/core/config.ts', import.meta.
 test('default runtime data stays in the unified workspace, not XDG storage', (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'courseflow-config-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const copiedModule = path.join(home, 'checkout', 'src', 'core', 'config.ts');
+  fs.mkdirSync(path.dirname(copiedModule), { recursive: true });
+  fs.copyFileSync(configModule, copiedModule);
   const xdgDataHome = path.join(home, 'other-data');
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, XDG_DATA_HOME: xdgDataHome };
   delete env.CF_DATA_DIR;
   const config = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e',
-    `import { loadConfig } from ${JSON.stringify(configModule)}; console.log(JSON.stringify(loadConfig()));`,
+    `import { loadConfig } from ${JSON.stringify(copiedModule)}; console.log(JSON.stringify(loadConfig()));`,
   ], { env, encoding: 'utf8' }));
   assert.equal(config.dataDir, path.join(home, 'local', 'data'));
   assert.equal(fs.existsSync(xdgDataHome), false);
