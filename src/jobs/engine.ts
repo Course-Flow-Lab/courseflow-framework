@@ -653,9 +653,20 @@ export class JobEngine {
       }
       let submissionUnconfirmed = false;
       const checkedQuizzes = new Set<string>();
-      const runQuiz = async (paper: Paper, reconcileAttemptId?: string) => {
+      const runQuiz = async (paper: Paper, reconcileAttemptId?: string): Promise<boolean> => {
         checkedQuizzes.add(paper.id);
         const result = await runPrerequisiteQuiz(workflowContext(), paper, reconcileAttemptId);
+        if (result === 'historical' && !reconcileAttemptId) {
+          const record = checkpoint.prerequisite_quizzes?.records.findLast(r => r.confirmed === true && (r.paper as Paper | undefined)?.id === paper.id);
+          const attemptId = (record?.attempt as { id?: unknown } | undefined)?.id;
+          if (typeof attemptId !== 'string' || !attemptId) {
+            workflowContext().pause(`${paper.name}：历史已经确认交卷，但缺少原答卷编号，不能自动重开。请在官方页面核对`);
+            return false;
+          }
+          // The module supplied a historical cache hit, not a new submission.
+          // Probe the exact sheet once through the existing strict draft guard.
+          return runQuiz(paper, attemptId);
+        }
         if (result === 'unconfirmed') {
           submissionUnconfirmed = true;
           this.event(taskId, 'submission_unconfirmed', '原答卷待确认，刷新超星目录并接续已开放的所选内容');

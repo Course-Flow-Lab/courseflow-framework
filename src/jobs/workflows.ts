@@ -20,6 +20,7 @@ type AnswerState = {
   answers: Record<string, string[]>; explanations: Record<string, string>; preserve: string[];
   confirmed?: boolean; nonce?: string; lock?: string; readbacks?: number; submit_retried?: boolean; remaining?: number;
   reconcile_attempt_id?: string;
+  cached_submission?: boolean; historical_confirmation?: boolean;
   records: Array<Record<string, unknown>>;
   model_diagnostics?: Array<ModelAnswerFailure & { question_id: string; created_at: number }>;
 };
@@ -67,7 +68,7 @@ async function runAnswerWorkflow(c: WorkflowContext, prerequisite?: Paper): Prom
   try { return await answer(c, prerequisite); } finally { clearInterval(timer); }
 }
 
-export async function runPrerequisiteQuiz(c: WorkflowContext, paper: Paper, reconcileAttemptId?: string): Promise<'completed' | 'unconfirmed' | 'paused'> {
+export async function runPrerequisiteQuiz(c: WorkflowContext, paper: Paper, reconcileAttemptId?: string): Promise<'completed' | 'historical' | 'unconfirmed' | 'paused'> {
   const state: AnswerState = c.checkpoint.workflow?.kind === 'prerequisite_quiz'
     ? c.checkpoint.workflow
     : { ...newAnswerState(), kind: 'prerequisite_quiz', paper, reconcile_attempt_id: reconcileAttemptId };
@@ -87,7 +88,9 @@ export async function runPrerequisiteQuiz(c: WorkflowContext, paper: Paper, reco
   }
   delete c.checkpoint.workflow;
   c.save();
-  return 'completed';
+  // Preserve the historical report first, then let the study driver reconcile
+  // this exact cached sheet in the same run instead of requiring a resume.
+  return result !== 'unchanged' && state.historical_confirmation && !state.reconcile_attempt_id ? 'historical' : 'completed';
 }
 
 async function review(c: WorkflowContext) {
@@ -219,6 +222,8 @@ async function answer(c: WorkflowContext, prerequisite?: Paper) {
       }
       if (!opened.ready || !opened.attempt || !Array.isArray(opened.attempt.questions) || !opened.attempt.questions.length) { c.pause('试卷尚未完整读取，请核对当前作答记录'); return false; }
       state.attempt = opened.attempt;
+      state.cached_submission = opened.cached_submission === true;
+      delete state.historical_confirmation;
       (state as any).started_at = nowSeconds();
       for (const q of state.attempt!.questions) q.images = (q.images ?? []).map((url) => c.manager.registerImage(c.platformOwner, c.task.platform, url));
       state.answers = {}; state.explanations = {}; state.preserve = []; state.cursor = 0; state.confirmed = false; state.phase = 'answers';
@@ -294,6 +299,7 @@ async function answer(c: WorkflowContext, prerequisite?: Paper) {
     if (c.task.platform === 'cx' && ['answers', 'waiting_answers', 'draft', 'waiting_submit'].includes(state.phase)) {
       const result = await call(c, 'exam.readback', { attempt_id: attempt.id, ...reconciled });
       if (result.confirmed === true && result.attempt_id === attempt.id) {
+        state.historical_confirmation = state.cached_submission === true && !state.reconcile_attempt_id;
         state.phase = 'readback'; state.readbacks = 0; save();
       }
     }

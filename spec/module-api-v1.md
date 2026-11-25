@@ -147,6 +147,8 @@ Node.js 使用权限模型限制文件、网络和子进程。二进制直接作
 
 宿主在交卷前持久化操作锁。模块不能把 HTTP 应答视为已确认提交；回读必须返回原 `attempt_id`。`graded_answers` 只能包含平台公开或已判为正确的答案。已提交内容不得通过写入式开卷接口读取。
 
+超星 `exam.open` 命中已确认交卷的旧缓存时，可附带 `cached_submission:true`。Framework 0.1.21 先保留该历史报告，再在同一执行轮次核对原答卷；新读取的已交卷页面或本轮新交卷不使用这个标记，不会触发额外写入。
+
 超星可提供 `exam.reconcile {session,course,paper_id,attempt_id}`，用于目录仍未完成但任务有历史交卷记录的前置测验。只读取同一份官方答卷；结果为 `submitted`、`below_pass`、`unknown` 或明确可作答的 `draft`（附 `ready:true,attempt`）。只在最后一种结果且答卷编号匹配时启用独立的 `exam.write` / `exam.readback` 作答上下文（`reconciled:true`）。它不覆盖历史提交记录或操作锁，写入前重新核对官方状态，未知结果只读不重发。章节解锁仍以官方目录为准。
 
 ### 超额问答选项（框架 ≥ 0.1.6）

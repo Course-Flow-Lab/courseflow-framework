@@ -302,7 +302,8 @@ for (const [scenario, title] of submissionCases) {
   });
 }
 
-test('超星当前答卷与历史交卷冲突时，保留历史锁并按官方草稿正常通过前置测验', {skip:!available,timeout:35_000}, async t => {
+for (const scenario of ['checkpoint-history', 'module-cache', 'submitted-cache', 'ready-module-cache'] as const) {
+test(`超星当前答卷与历史交卷冲突时保留历史锁（${scenario}）`, {skip:!available,timeout:35_000}, async t => {
   const {runtime}=await boot('courseflow-cx-reconciled-quiz-');t.after(()=>runtime.close());
   runtime.manager.install(moduleDir);runtime.manager.configure('cx',{source:'live',python});
   const session=await setupAdmin(runtime);
@@ -310,7 +311,7 @@ test('超星当前答卷与历史交卷冲突时，保留历史锁并按官方�
   runtime.sessions.save(owner,'cx',{cookies:[],token:'',display_name:'合成用户',account_raw:'7',connected_at:1,session_id:'synthetic-connection'});
   const course={id:'11',recruit_id:'22',name:'合成课程',kind:'chaoxing',outline_available:true};
   const paper={id:'work-55',name:'合成前置测验'};
-  const attempt={id:'66',paper_id:paper.id,name:paper.name,questions:[],expires_at:null};
+  const attempt={id:'66',paper_id:paper.id,name:paper.name,questions:[{id:'q1',text:'1+1=?',kind:'single',options:[{id:'A',text:'1'},{id:'B',text:'2'}],answer:[],images:[],blanks:0}],expires_at:null};
   const historical={paper,attempt,confirmed:true,score:null};
   const original={attempt,job:paper.id,form:{workRelationId:'55'},submit_intent:true,submitted_ack:true,submission_confirmed:true};
   const saveState=(key:string)=>{
@@ -322,7 +323,7 @@ test('超星当前答卷与历史交卷冲突时，保留历史锁并按官方�
   const historicalBytes=stateBytes();
   const task=runtime.jobs.create(owner,{platform:'cx',course,unit_ids:['locked:2'],operation:'study',options:{auto_prerequisite_quizzes:true}});
   runtime.jobs.pause(owner,task.id);
-  const checkpoint={completed:[],positions:{},prerequisite_quizzes:{completed:[paper.id],records:[historical]}};
+  const checkpoint={completed:[],positions:{},...(scenario==='checkpoint-history'?{prerequisite_quizzes:{completed:[paper.id],records:[historical]}}:{})};
   runtime.db.run('UPDATE tasks SET checkpoint=?1 WHERE id=?2',runtime.vault.sealJson(owner,`job/${task.id}`,checkpoint),task.id);
   const resource=digest(JSON.stringify([runtime.manager.accountKey(owner,'cx'),'cx','11/22',paper.id]));
   const oldLock=digest(JSON.stringify([resource,attempt.id,'']));
@@ -331,7 +332,7 @@ test('超星当前答卷与历史交卷冲突时，保留历史锁并按官方�
 
   const fields={workAnswerId:'66',answerId:'66',courseId:'11',classId:'22',cpi:'33',knowledgeid:'1',jobid:paper.id};
   const hidden=Object.entries(fields).map(([name,value])=>`<input type="hidden" name="${name}" value="${value}">`).join('');
-  let canProveDraft=false,saved=false,submitted=false;
+  let canProveDraft=scenario==='ready-module-cache',saved=false,submitted=false;
   const steps:string[]=[];
   t.mock.method(runtime.ai,'generate',async (_owner:string,prompt:string)=>{assert.match(prompt,/1\+1/);steps.push('model');return '{"answer":"B"}';});
   t.mock.method(globalThis,'fetch',async (input:URL, init:RequestInit)=>{
@@ -352,7 +353,7 @@ test('超星当前答卷与历史交卷冲突时，保留历史锁并按官方�
       case '/mooc-ans/api/work':
         assert.equal(init.method,'GET');assert.equal(url.searchParams.get('jobid'),paper.id);
         steps.push(submitted?'graded':'probe');
-        if(submitted) return new Response(`<title>查看已批阅作业</title><form id="questionErrorForm1">${hidden}<span class="achievement">本次成绩<i>100</i>分</span></form>`);
+        if(submitted||scenario==='submitted-cache') return new Response(`<title>查看已批阅作业</title><form id="questionErrorForm1">${hidden}<span class="achievement">本次成绩<i>100</i>分</span></form>`);
         return new Response(`<form id="form1" method="post" action="addStudentWorkNewWeb?token=current">${hidden}${canProveDraft?'<input id="addTimes" value="0">':''}<input id="limitWorkSubmitTimes" value="100"><input name="workRelationId" value="55"><input name="totalQuestionNum" value="synthetic-opaque-count-token"><input name="enc_work" value="current"><a class="btnSubmit" onclick="btnBlueSubmit();">提交</a><input name="answerq1" value="${saved?'B':''}"><div class="singleQuesId" data="q1"><div class="TiMu" data="0"><div class="Zy_TItle">1+1=?</div><ul><li aria-label="A. 1"></li><li aria-label="B. 2"></li></ul></div></div></form>`);
       case '/mooc-ans/work/validate': return Response.json({status:3});
       case '/mooc-ans/work/isExpire': return Response.json({status:0,standardEnc:'current'});
@@ -374,20 +375,48 @@ test('超星当前答卷与历史交卷冲突时，保留历史锁并按官方�
   });
   const resume=async()=>assert.equal((await call(runtime,{method:'POST',url:'/api/tasks/'+task.id+'/resume',session})).status,200);
   await resume();
+  if(scenario==='ready-module-cache') {
+    const completed=await waitFor(runtime,session,task.id,'completed');
+    assert.deepEqual(completed.completed,['doc-2']);
+    assert.deepEqual(steps,['probe','model','probe','draft','probe','submit','graded','doc-2']);
+    const {workflow}=runtime.jobs.details(owner,task.id) as any;
+    assert.equal(workflow.records.length,2);
+    assert.equal(workflow.records[0].attempt.id,'66');
+    assert.equal(workflow.records[0].score,null);
+    assert.equal(workflow.records[1].score,100);
+    assert.equal(workflow.records[1].reconciled,true);
+    assert.deepEqual(stateBytes(),historicalBytes);
+    assert.deepEqual(runtime.db.get('SELECT * FROM operation_locks WHERE id=?1',oldLock),oldLockRow);
+    assert.equal(runtime.db.all("SELECT state FROM operation_locks WHERE state='confirmed'").length,2);
+    assert.equal(runtime.jobs.events(owner,task.id).filter(e=>e.kind==='resumed').length,1);
+    return;
+  }
   const blocked=await waitFor(runtime,session,task.id,'paused');
-  assert.match(blocked.detail,/未确认同一答卷当前可提交/);
-  assert.deepEqual(steps,['probe']);
+  assert.deepEqual(steps,['probe'],'模块缓存确认也必须在同一执行轮次只读核对，不要求用户先继续一次');
   assert.equal(runtime.db.get<{n:number}>('SELECT count(*) n FROM write_ledger')?.n,0);
+  const retainedHistory=(runtime.jobs.details(owner,task.id).workflow as any).records[0];
+  assert.equal(retainedHistory.confirmed,true);
+  assert.equal(retainedHistory.attempt.id,'66');
+  if(scenario==='submitted-cache') {
+    assert.match(blocked.detail,/待解锁或需人工处理/);
+    assert.deepEqual(stateBytes(),historicalBytes);
+    assert.deepEqual(runtime.db.get('SELECT * FROM operation_locks WHERE id=?1',oldLock),oldLockRow);
+    assert.equal(runtime.db.all('SELECT * FROM operation_locks').length,1);
+    return;
+  }
+  assert.match(blocked.detail,/未确认同一答卷当前可提交/);
   canProveDraft=true;
   await resume();
   const completed=await waitFor(runtime,session,task.id,'completed');
   assert.deepEqual(completed.completed,['doc-2']);
   assert.deepEqual(steps,['probe','probe','model','probe','draft','probe','submit','graded','doc-2']);
   const {workflow}=runtime.jobs.details(owner,task.id) as any;
-  assert.deepEqual(workflow.records[0],historical);
+  assert.deepEqual(workflow.records[0],retainedHistory);
+  assert.equal(workflow.records.length,2);
   assert.equal(workflow.records[1].attempt.id,'66');assert.equal(workflow.records[1].score,100);
   assert.equal(workflow.records[1].reconciled,true);
   assert.deepEqual(stateBytes(),historicalBytes);
   assert.deepEqual(runtime.db.get('SELECT * FROM operation_locks WHERE id=?1',oldLock),oldLockRow);
   assert.equal(runtime.db.all("SELECT state FROM operation_locks WHERE state='confirmed'").length,2);
 });
+}
